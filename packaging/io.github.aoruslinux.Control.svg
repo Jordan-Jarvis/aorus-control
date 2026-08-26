@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="AORUS Control">
+  <rect width="128" height="128" rx="24" fill="#20242b"/>
+  <path d="M64 19 76 48l30 2-23 19 7 30-26-16-26 16 7-30-23-19 30-2z" fill="#71d6c4"/>
+  <circle cx="64" cy="64" r="14" fill="#20242b"/>
+</svg>

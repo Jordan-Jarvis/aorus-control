@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=AORUS Control
+Comment=Native fan, power, temperature, and charging controls for supported AORUS laptops
+Exec=aorus-control
+Icon=io.github.aoruslinux.Control
+Terminal=false
+StartupNotify=true
+Categories=Settings;HardwareSettings;
+Keywords=AORUS;Gigabyte;fan;temperature;power;

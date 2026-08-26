@@ -1,0 +1,10 @@
+# Installed only when /etc/aorus-control/config.toml does not already exist.
+# The normal Phase 1 installation is read-only shadow mode: Python remains the
+# fan-profile writer until the installed migrate-to-rust helper is explicitly
+# invoked.
+version = 1
+
+[profile_mappings]
+performance = "gaming"
+balanced = "normal"
+battery = "silent"

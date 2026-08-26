@@ -1,0 +1,30 @@
+[Unit]
+Description=AORUS Control hardware daemon (shadow mode)
+Documentation=https://github.com/tangalbert919/gigabyte-laptop-wmi
+After=dbus.service systemd-modules-load.service com.system76.PowerDaemon.service
+Wants=dbus.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/local/libexec/aorusd
+Restart=on-failure
+RestartSec=2s
+Environment=AORUS_CONTROL_CONFIG=/etc/aorus-control/config.toml
+ConfigurationDirectory=aorus-control
+ConfigurationDirectoryMode=0700
+UMask=0077
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+# The only persistent write path needed by explicit write-mode migration.
+ReadWritePaths=/etc/aorus-control
+RestrictAddressFamilies=AF_UNIX
+NoNewPrivileges=true
+LockPersonality=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

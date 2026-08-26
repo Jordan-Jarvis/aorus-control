@@ -12,6 +12,7 @@ This is the integration contract between `aorusd`, `aorusctl`, and the native UI
 | Member | Input | Output |
 | --- | --- | --- |
 | `GetStatus` | none | `a{sv}` |
+| `GetProfileMappings` | none | `a{sy}` mapping normalized power-profile names to fan-mode values |
 | `GetFanCurve` | none | `a(yy)` containing exactly 15 `(temperature, raw_speed)` pairs when available |
 | `SetPowerProfile` | `s` (`performance`, `balanced`, or `battery`) | none |
 | `SetFanMode` | `y` (0 Normal, 1 Silent, 2 Gaming, 3 Custom) | none |
@@ -22,7 +23,20 @@ This is the integration contract between `aorusd`, `aorusctl`, and the native UI
 | `SetChargeLimit` | `y` | none |
 | `SetGpuBoost` | `y` | none |
 
-Every mutating method fails while the daemon is in shadow mode. Write mode also requires polkit action `io.github.aoruslinux.control.modify` and is never enabled by the normal Phase 1 installer.
+Selecting or reapplying Custom always rewrites and verifies the stored 15-point
+curve before activating Custom. The daemon never merely selects Custom after a
+firmware reset or an unverified rollback. An unverified rollback disables the
+stored Custom curve and resets Custom mappings to conservative firmware
+profiles.
+
+`SetPowerProfile` is available in shadow mode: it changes the System76 power
+policy and lets the existing Python profile-sync service synchronize the fan
+profile. Every direct AORUS mutation (`SetFanMode`, `ReapplyFanProfile`,
+`SetFanCurve`, `SetProfileMappings`, charging, and GPU methods) fails while
+the daemon is in shadow mode. Direct writes require write-enabled mode, the
+Python service to be inactive, and polkit action
+`io.github.aoruslinux.control.modify`; write mode is never enabled by the
+normal Phase 1 installer.
 
 ## Status keys
 
@@ -43,8 +57,30 @@ Keys may be added compatibly. Missing/unsupported readings are omitted rather th
 | `usb_charge_s3` / `usb_charge_s4` | `b` | read-only capability state |
 | `graphics_mode` | `s` | System76 graphics mode when available |
 | `graphics_power` | `b` | System76 discrete graphics power when available |
-| `custom_curve_available` | `b` | complete valid curve can be read |
+| `custom_curve_available` | `b` | a validated custom curve is stored and may be selected/mapped |
+| `product_name` / `product_version` | `s` | DMI product identity |
+| `bios_version` / `bios_date` | `s` | DMI firmware identity |
+| `kernel_release` | `s` | running kernel release |
+| `driver_module_version` | `s` | loaded `aorus_laptop` module version, when exported |
+| `platform_path` / `hwmon_path` | `s` | dynamically discovered AORUS sysfs paths |
 | `last_error` | `s` | last actionable daemon error; omitted when clear |
+| `cap_fan_modes` | `ay` | fan-mode values supported by this model; values use the same firmware numbering as `fan_mode` |
+| `cap_fan_curve_points` | `y` | number of writable fan-curve points, when supported; zero means unavailable |
+| `cap_charge_mode` | `b` | charging-mode control is available |
+| `cap_charge_limit` | `b` | charging-limit control is available |
+| `cap_usb_charge_s3` / `cap_usb_charge_s4` | `b` | corresponding USB charging control is available |
+| `cap_gpu_boost_values` | `ay` | verified GPU boost values accepted by this model; empty means unavailable/unverified |
 
 All readers ignore unknown keys. RPM and raw fan-curve level are different units and must never be interchanged.
 
+## Fan-curve read side effect
+
+`GetFanCurve` is logically read-only from the API's point of view, but the
+current driver exposes curve points through the writable `fan_curve_index`
+selector. The daemon temporarily selects each index to read its point and
+restores the previous selector. Consequently, a curve read can fail and can
+briefly change that selector; callers should not poll it as telemetry. Curve
+reads and writes are serialized by the daemon. Strict shadow mode never writes
+the selector: it returns the stored validated curve when one exists, otherwise
+`GetFanCurve` reports that the curve is unavailable. A live firmware curve is
+first captured only in an exclusive write-enabled test window.

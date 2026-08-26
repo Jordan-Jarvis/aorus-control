@@ -10,4 +10,3 @@ pub mod profile;
 pub const DBUS_DESTINATION: &str = "io.github.aoruslinux.Control1";
 pub const DBUS_INTERFACE: &str = "io.github.aoruslinux.Control1";
 pub const DBUS_PATH: &str = "/io/github/aoruslinux/Control1";
-

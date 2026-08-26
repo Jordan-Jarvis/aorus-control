@@ -1,0 +1,38 @@
+Aug 22 21:09:36 pop-os aorus-power-profile-sync[1357]: Scheduled profile reselect in 2s; reason=UPower device change /org/freedesktop/UPower/devices/battery_BAT1
+Aug 22 21:09:36 pop-os aorus-power-profile-sync[1357]: Scheduled profile reselect in 2s; reason=UPower device change /org/freedesktop/UPower/devices/DisplayDevice
+Aug 22 21:09:38 pop-os aorus-power-profile-sync[1357]: Force-reselected profile 'Balanced': fan_mode 2 (gaming) then 0 (normal); previous fan_mode=0; reason=UPower device change /org/freedesktop/UPower/devices/DisplayDevice
+Aug 22 21:12:06 pop-os aorus-power-profile-sync[1357]: Scheduled profile reselect in 2s; reason=UPower device change /org/freedesktop/UPower/devices/battery_BAT1
+Aug 22 21:12:06 pop-os aorus-power-profile-sync[1357]: Scheduled profile reselect in 2s; reason=UPower device change /org/freedesktop/UPower/devices/DisplayDevice
+Aug 22 21:12:09 pop-os aorus-power-profile-sync[1357]: Force-reselected profile 'Balanced': fan_mode 2 (gaming) then 0 (normal); previous fan_mode=0; reason=UPower device change /org/freedesktop/UPower/devices/DisplayDevice
+Aug 22 21:18:07 pop-os aorus-power-profile-sync[1357]: Scheduled profile reselect in 2s; reason=UPower device change /org/freedesktop/UPower/devices/battery_BAT1
+Aug 22 21:18:07 pop-os aorus-power-profile-sync[1357]: Scheduled profile reselect in 2s; reason=UPower device change /org/freedesktop/UPower/devices/DisplayDevice
+Aug 22 21:18:09 pop-os aorus-power-profile-sync[1357]: Force-reselected profile 'Balanced': fan_mode 2 (gaming) then 0 (normal); previous fan_mode=0; reason=UPower device change /org/freedesktop/UPower/devices/DisplayDevice
+Aug 22 21:18:37 pop-os aorus-power-profile-sync[1357]: Scheduled profile reselect in 2s; reason=UPower device change /org/freedesktop/UPower/devices/battery_BAT1
+Aug 22 21:18:37 pop-os aorus-power-profile-sync[1357]: Scheduled profile reselect in 2s; reason=UPower device change /org/freedesktop/UPower/devices/DisplayDevice
+Aug 22 21:18:39 pop-os aorus-power-profile-sync[1357]: Force-reselected profile 'Balanced': fan_mode 2 (gaming) then 0 (normal); previous fan_mode=0; reason=UPower device change /org/freedesktop/UPower/devices/DisplayDevice
+Aug 22 21:34:40 pop-os aorus-power-profile-sync[1357]: Scheduled profile reselect in 2s; reason=UPower device change /org/freedesktop/UPower/devices/battery_BAT1
+Aug 22 21:34:40 pop-os aorus-power-profile-sync[1357]: Scheduled profile reselect in 2s; reason=UPower device change /org/freedesktop/UPower/devices/DisplayDevice
+Aug 22 21:34:43 pop-os aorus-power-profile-sync[1357]: Force-reselected profile 'Balanced': fan_mode 2 (gaming) then 0 (normal); previous fan_mode=0; reason=UPower device change /org/freedesktop/UPower/devices/DisplayDevice
+Aug 22 21:35:11 pop-os aorus-power-profile-sync[1357]: Scheduled profile reselect in 2s; reason=UPower device change /org/freedesktop/UPower/devices/battery_BAT1
+Aug 22 21:35:11 pop-os aorus-power-profile-sync[1357]: Scheduled profile reselect in 2s; reason=UPower device change /org/freedesktop/UPower/devices/DisplayDevice
+Aug 22 21:35:13 pop-os aorus-power-profile-sync[1357]: Force-reselected profile 'Balanced': fan_mode 2 (gaming) then 0 (normal); previous fan_mode=0; reason=UPower device change /org/freedesktop/UPower/devices/DisplayDevice
+Aug 22 21:37:11 pop-os aorus-power-profile-sync[1357]: Scheduled profile reselect in 2s; reason=UPower device change /org/freedesktop/UPower/devices/battery_BAT1
+Aug 22 21:37:11 pop-os aorus-power-profile-sync[1357]: Scheduled profile reselect in 2s; reason=UPower device change /org/freedesktop/UPower/devices/DisplayDevice
+Aug 22 21:37:13 pop-os aorus-power-profile-sync[1357]: Force-reselected profile 'Balanced': fan_mode 2 (gaming) then 0 (normal); previous fan_mode=0; reason=UPower device change /org/freedesktop/UPower/devices/DisplayDevice
+Aug 22 21:46:12 pop-os aorus-power-profile-sync[1357]: Scheduled profile reselect in 2s; reason=UPower device change /org/freedesktop/UPower/devices/battery_BAT1
+Aug 22 21:46:12 pop-os aorus-power-profile-sync[1357]: Scheduled profile reselect in 2s; reason=UPower device change /org/freedesktop/UPower/devices/DisplayDevice
+Aug 22 21:46:14 pop-os aorus-power-profile-sync[1357]: Force-reselected profile 'Balanced': fan_mode 2 (gaming) then 0 (normal); previous fan_mode=0; reason=UPower device change /org/freedesktop/UPower/devices/DisplayDevice
+-- Boot 0bfead07df214dceba7e2af4fa2eafa9 --
+Aug 23 21:30:01 pop-os systemd[1]: Started aorus-power-profile-sync.service - Sync Gigabyte AERO/AORUS fan mode with Pop!_OS power profile.
+Aug 23 21:30:01 pop-os aorus-power-profile-sync[1369]: Mapped profile 'Balanced' -> fan_mode 0 (normal); previous fan_mode=0; reason=service-start
+Aug 23 21:30:01 pop-os aorus-power-profile-sync[1369]: Watching system76-power / PowerProfiles / logind resume / UPower AC-battery signals
+Aug 26 11:06:20 pop-os aorus-power-profile-sync[1369]: Mapped profile 'Performance' -> fan_mode 2 (gaming); previous fan_mode=0; reason=system76 PowerProfileSwitch
+Aug 26 11:06:20 pop-os aorus-power-profile-sync[1369]: Ignoring duplicate profile signal 'performance' from UPower PowerProfiles
+Aug 26 11:09:12 pop-os systemd[1]: Stopping aorus-power-profile-sync.service - Sync Gigabyte AERO/AORUS fan mode with Pop!_OS power profile...
+Aug 26 11:09:12 pop-os systemd[1]: aorus-power-profile-sync.service: Deactivated successfully.
+Aug 26 11:09:12 pop-os systemd[1]: Stopped aorus-power-profile-sync.service - Sync Gigabyte AERO/AORUS fan mode with Pop!_OS power profile.
+Aug 26 11:09:12 pop-os systemd[1]: aorus-power-profile-sync.service: Consumed 1.699s CPU time, 11.0M memory peak, 9.4M memory swap peak.
+Aug 26 11:09:12 pop-os systemd[1]: Started aorus-power-profile-sync.service - Sync Gigabyte AERO/AORUS fan mode with Pop!_OS power profile.
+Aug 26 11:09:12 pop-os aorus-power-profile-sync[3136253]: Mapped profile 'Performance' -> fan_mode 2 (gaming); previous fan_mode=2; reason=service-start
+Aug 26 11:09:12 pop-os aorus-power-profile-sync[3136253]: Scheduled fan profile watchdog every 60s
+Aug 26 11:09:12 pop-os aorus-power-profile-sync[3136253]: Watching system76-power / PowerProfiles / logind resume / UPower AC-battery signals
