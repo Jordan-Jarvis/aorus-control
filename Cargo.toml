@@ -1,0 +1,31 @@
+[package]
+name = "aorus-control"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Native Linux controls for supported GIGABYTE AERO/AORUS laptops"
+
+[features]
+default = ["ui"]
+ui = ["dep:eframe", "dep:egui_plot"]
+
+[dependencies]
+eframe = { version = "0.36.1", optional = true, default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
+egui_plot = { version = "0.37.0", optional = true }
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.1.4"
+zbus = { version = "5.19.0", default-features = true }
+
+[[bin]]
+name = "aorus-control"
+path = "src/bin/aorus-control.rs"
+required-features = ["ui"]
+
+[[bin]]
+name = "aorusctl"
+path = "src/bin/aorusctl.rs"
+
+[[bin]]
+name = "aorusd"
+path = "src/bin/aorusd.rs"
+
