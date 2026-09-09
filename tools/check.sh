@@ -33,9 +33,13 @@ fi
 if udevadm verify --help >/dev/null 2>&1; then
   udevadm verify packaging/70-aorus-brightness-hid-bpf.rules
 fi
-if [[ -f /lib/modules/$(uname -r)/build/Makefile ]]; then
+kernel_build=/lib/modules/$(uname -r)/build
+if [[ -f $kernel_build/Makefile && -f $kernel_build/Module.symvers ]] &&
+  grep -qw iio_device_alloc "$kernel_build/Module.symvers"; then
   make -C brightness/als W=1 check
   make -C brightness/als clean
+else
+  printf '%s\n' 'Skipping ambient-light module build: usable IIO kernel build metadata is unavailable.'
 fi
 if [[ -n ${UDEV_HID_BPF_SOURCE:-} ]]; then
   tools/brightness-hid-bpf-build.sh target/aorus-brightness.bpf.o
