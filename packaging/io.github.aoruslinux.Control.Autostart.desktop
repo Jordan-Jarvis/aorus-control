@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=AORUS Control
+Comment=Keep AORUS controls available in the status area
+Exec=/usr/local/bin/aorus-control --background
+Icon=io.github.aoruslinux.Control
+Terminal=false
+StartupNotify=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

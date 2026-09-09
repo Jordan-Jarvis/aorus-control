@@ -7,10 +7,14 @@ use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::error::Error;
 use std::fmt;
-use std::process;
+use std::process::{self, Command};
+use std::str::FromStr;
 use std::time::Duration;
 
 use aorus_control::curve::{FAN_CURVE_POINTS, FanCurve, FanPoint};
+use aorus_control::fn_buttons::{ButtonEvidence, FnAction, FnButtonMappings, PhysicalButtonId};
+use aorus_control::hotkeys::{load_fn_button_mappings, save_fn_button_mappings};
+use aorus_control::model::PowerProfile;
 use aorus_control::{DBUS_DESTINATION, DBUS_INTERFACE, DBUS_PATH};
 use zbus::blocking::{Connection, Proxy, connection::Builder};
 use zbus::zvariant::OwnedValue;
@@ -48,7 +52,38 @@ impl Error for CliError {}
 type CliResult<T> = Result<T, CliError>;
 
 fn usage() -> &'static str {
-    "Usage:\n  aorusctl status\n  aorusctl curve show\n  aorusctl curve apply TEMP:RAW_SPEED ... (exactly 15 points)\n  aorusctl profile performance|balanced|battery\n  aorusctl fan normal|silent|gaming|custom\n  aorusctl fan reapply\n  aorusctl mappings get\n  aorusctl mappings set PROFILE=FAN_PROFILE [...]\n  aorusctl charge mode 0|1|normal|custom\n  aorusctl charge limit 60-100\n  aorusctl gpu boost VALUE\n  aorusctl diagnostics\n\nCurve points use temperature in °C and firmware raw fan level 0-255, for\nexample: aorusctl curve apply T0:S0 T1:S1 ... (15 total). Values are\nvalidated locally and again by aorusd; the CLI never writes sysfs.\n\nExit codes:\n  2  invalid command or argument\n  3  system bus or aorusd unavailable\n  4  authorization denied\n  5  invalid value rejected by aorusd\n  6  hardware operation, verification, or API failure"
+    r#"Usage:
+  aorusctl status
+  aorusctl curve show
+  aorusctl curve capture
+  aorusctl curve apply TEMP:RAW_SPEED ... (exactly 15 points)
+  aorusctl profile performance|balanced|battery|cycle
+  aorusctl fan normal|silent|gaming|custom
+  aorusctl fan reapply
+  aorusctl mappings get
+  aorusctl mappings set PROFILE=FAN_PROFILE [...]
+  aorusctl charge mode 0|1|normal|custom
+  aorusctl charge limit 60-100
+  aorusctl gpu boost VALUE
+  aorusctl radio wifi-toggle
+  aorusctl radio airplane-toggle
+  aorusctl fn list
+  aorusctl fn get BUTTON
+  aorusctl fn set BUTTON ACTION
+  aorusctl fn reset BUTTON|all
+  aorusctl fn status|enable|disable
+  aorusctl diagnostics
+
+Curve points use temperature in °C and firmware raw fan level 0-255, for
+example: aorusctl curve apply T0:S0 T1:S1 ... (15 total). Values are
+validated locally and again by aorusd; the CLI never writes sysfs.
+
+Exit codes:
+  2  invalid command or argument
+  3  system bus or aorusd unavailable
+  4  authorization denied
+  5  invalid value rejected by aorusd
+  6  hardware operation, verification, or API failure"#
 }
 
 fn classify_dbus_error(message: &str) -> i32 {
@@ -88,6 +123,22 @@ fn dbus_error(operation: &str, error: impl fmt::Display) -> CliError {
         classify_dbus_error(&detail),
         format!("{operation} failed: {detail}"),
     )
+}
+
+fn fn_config_error(operation: &str, error: impl fmt::Display) -> CliError {
+    let detail = error.to_string();
+    let lower = detail.to_ascii_lowercase();
+    let code = if lower.contains("permission denied") {
+        EXIT_AUTH
+    } else if lower.contains("requires cosmic")
+        || lower.contains("unsupported desktop")
+        || lower.contains("unavailable")
+    {
+        EXIT_UNAVAILABLE
+    } else {
+        EXIT_OPERATION
+    };
+    CliError::new(code, format!("{operation} failed: {detail}"))
 }
 
 fn system_connection() -> CliResult<Connection> {
@@ -228,11 +279,23 @@ fn show_curve(proxy: &Proxy<'_>) -> CliResult<()> {
     let curve: Vec<(u8, u8)> = proxy
         .call("GetFanCurve", &())
         .map_err(|error| dbus_error("GetFanCurve", error))?;
+    print_curve(&curve, "GetFanCurve")
+}
+
+fn capture_curve(proxy: &Proxy<'_>) -> CliResult<()> {
+    let curve: Vec<(u8, u8)> = proxy
+        .call("CaptureFanCurve", &())
+        .map_err(|error| dbus_error("CaptureFanCurve", error))?;
+    println!("captured and stored the current firmware curve without changing fan profile");
+    print_curve(&curve, "CaptureFanCurve")
+}
+
+fn print_curve(curve: &[(u8, u8)], operation: &str) -> CliResult<()> {
     if curve.len() != FAN_CURVE_POINTS {
         return Err(CliError::new(
             EXIT_OPERATION,
             format!(
-                "GetFanCurve returned {} points; expected exactly {FAN_CURVE_POINTS}",
+                "{operation} returned {} points; expected exactly {FAN_CURVE_POINTS}",
                 curve.len()
             ),
         ));
@@ -361,6 +424,289 @@ fn set_profile(proxy: &Proxy<'_>, profile: &str) -> CliResult<()> {
         .map_err(|error| dbus_error("SetPowerProfile", error))?;
     println!("requested power profile: {profile}");
     Ok(())
+}
+
+fn cycle_profile(proxy: &Proxy<'_>) -> CliResult<()> {
+    let status = call_status(proxy)?;
+    let current_text = status
+        .get("power_profile")
+        .and_then(|value| String::try_from(value.clone()).ok())
+        .ok_or_else(|| {
+            CliError::new(
+                EXIT_OPERATION,
+                "GetStatus did not return a usable current power profile",
+            )
+        })?;
+    let current = PowerProfile::from_str(&current_text).map_err(|_| {
+        CliError::new(
+            EXIT_OPERATION,
+            format!("GetStatus returned unsupported power profile {current_text:?}"),
+        )
+    })?;
+    let next = next_profile(current);
+    set_profile(proxy, &next.to_string())?;
+    println!("cycled power profile: {current} -> {next}");
+    Ok(())
+}
+
+fn next_profile(profile: PowerProfile) -> PowerProfile {
+    match profile {
+        PowerProfile::Performance => PowerProfile::Balanced,
+        PowerProfile::Balanced => PowerProfile::Battery,
+        PowerProfile::Battery => PowerProfile::Performance,
+    }
+}
+
+fn fn_button_ids() -> String {
+    PhysicalButtonId::ALL
+        .into_iter()
+        .map(PhysicalButtonId::id)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn fn_action_ids() -> String {
+    FnAction::ALL
+        .into_iter()
+        .map(FnAction::id)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn parse_fn_button(value: &str) -> CliResult<PhysicalButtonId> {
+    PhysicalButtonId::from_id(value).ok_or_else(|| {
+        CliError::new(
+            EXIT_USAGE,
+            format!(
+                "unknown Fn button '{value}'; use one of the stable IDs: {}",
+                fn_button_ids()
+            ),
+        )
+    })
+}
+
+fn parse_fn_action(value: &str) -> CliResult<FnAction> {
+    FnAction::from_id(value).ok_or_else(|| {
+        CliError::new(
+            EXIT_USAGE,
+            format!(
+                "unknown Fn action '{value}'; use one of the stable IDs: {}",
+                fn_action_ids()
+            ),
+        )
+    })
+}
+
+fn print_fn_button(button: PhysicalButtonId, action: FnAction) {
+    let (status, evidence) = match button.evidence() {
+        ButtonEvidence::Captured(report) => ("captured native trigger", report),
+        ButtonEvidence::NotCaptured => ("not captured; translation inactive", "n/a"),
+    };
+    println!(
+        "{} ({})\taction={} ({})\tdefault={} ({})\ttrigger={}\tstatus={}\treport={}",
+        button.id(),
+        button.label(),
+        action.id(),
+        action.label(),
+        button.default_action().id(),
+        button.default_action().label(),
+        button.trigger(),
+        status,
+        evidence
+    );
+}
+
+fn fn_mappings() -> CliResult<FnButtonMappings> {
+    load_fn_button_mappings().map_err(|error| fn_config_error("loading Fn-button mappings", error))
+}
+
+fn run_fn_command(arguments: &[String]) -> CliResult<()> {
+    match arguments {
+        [command, subcommand] if command == "fn" && subcommand == "list" => {
+            let mappings = fn_mappings()?;
+            for (button, action) in mappings.iter() {
+                print_fn_button(button, action);
+            }
+            Ok(())
+        }
+        [command, subcommand, button] if command == "fn" && subcommand == "get" => {
+            let button = parse_fn_button(button)?;
+            let mappings = fn_mappings()?;
+            print_fn_button(button, mappings.get(button));
+            Ok(())
+        }
+        [command, subcommand, button, action] if command == "fn" && subcommand == "set" => {
+            let button = parse_fn_button(button)?;
+            let action = parse_fn_action(action)?;
+            let mut mappings = fn_mappings()?;
+            mappings.set(button, action);
+            save_fn_button_mappings(&mappings)
+                .map_err(|error| fn_config_error("saving Fn-button mappings", error))?;
+            println!(
+                "set {} ({}) -> {} ({})",
+                button.id(),
+                button.label(),
+                action.id(),
+                action.label()
+            );
+            Ok(())
+        }
+        [command, subcommand, target] if command == "fn" && subcommand == "reset" => {
+            if target == "all" {
+                let mut mappings = fn_mappings()?;
+                mappings.reset_all();
+                save_fn_button_mappings(&mappings)
+                    .map_err(|error| fn_config_error("saving reset Fn-button mappings", error))?;
+                println!("reset all Fn buttons to their defaults");
+            } else {
+                let button = parse_fn_button(target)?;
+                let mut mappings = fn_mappings()?;
+                mappings.reset(button);
+                save_fn_button_mappings(&mappings)
+                    .map_err(|error| fn_config_error("saving reset Fn-button mapping", error))?;
+                println!(
+                    "reset {} ({}) to its default action",
+                    button.id(),
+                    button.label()
+                );
+            }
+            Ok(())
+        }
+        _ => Err(CliError::new(EXIT_USAGE, usage())),
+    }
+}
+
+fn native_fn_keys(proxy: &Proxy<'_>, command: &str) -> CliResult<()> {
+    if command == "status" {
+        let status = call_status(proxy)?;
+        for key in [
+            "native_fn_keys_supported",
+            "native_fn_keys_enabled",
+            "native_fn_keys_active",
+        ] {
+            println!("{key}={}", status_bool(&status, key).unwrap_or(false));
+        }
+        return Ok(());
+    }
+
+    let enabled = command == "enable";
+    if enabled {
+        // Install the user's defaults/overrides before their physical key
+        // identities become live. COSMIC dispatch then works without the UI.
+        let mappings = fn_mappings()?;
+        save_fn_button_mappings(&mappings)
+            .map_err(|error| fn_config_error("installing Fn-button mappings", error))?;
+    }
+    let _: () = proxy
+        .call("SetNativeFnKeysEnabled", &enabled)
+        .map_err(|error| dbus_error("SetNativeFnKeysEnabled", error))?;
+    println!(
+        "native AORUS Fn-key translation {}",
+        if enabled { "enabled" } else { "disabled" }
+    );
+    Ok(())
+}
+
+fn nmcli(args: &[&str]) -> CliResult<String> {
+    let output = Command::new("nmcli")
+        .env("LC_ALL", "C")
+        .env("LANG", "C")
+        .args(args)
+        .output()
+        .map_err(|error| {
+            CliError::new(
+                EXIT_UNAVAILABLE,
+                format!("nmcli is unavailable; install NetworkManager ({error})"),
+            )
+        })?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        return Err(CliError::new(
+            EXIT_OPERATION,
+            format!(
+                "nmcli {} failed{}",
+                args.join(" "),
+                if stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {stderr}")
+                }
+            ),
+        ));
+    }
+    Ok(stdout)
+}
+
+fn toggle_wifi() -> CliResult<()> {
+    let current = nmcli(&["-t", "-f", "WIFI", "radio"])?;
+    let target = wifi_target(&current)?;
+    nmcli(&["radio", "wifi", target])?;
+    println!("Wi-Fi radio: {target}");
+    Ok(())
+}
+
+fn wifi_target(output: &str) -> CliResult<&'static str> {
+    match output.lines().next().map(str::trim) {
+        Some("enabled") => Ok("off"),
+        Some("disabled") => Ok("on"),
+        Some(value) => Err(CliError::new(
+            EXIT_OPERATION,
+            format!("nmcli returned an unknown Wi-Fi state {value:?}"),
+        )),
+        None => Err(CliError::new(
+            EXIT_OPERATION,
+            "nmcli returned no Wi-Fi state",
+        )),
+    }
+}
+
+fn toggle_airplane() -> CliResult<()> {
+    let current = nmcli(&["-t", "-f", "WIFI,WWAN", "radio"])?;
+    let target = airplane_target(&current)?;
+    nmcli(&["radio", "all", target])?;
+    println!(
+        "airplane/radio mode: {}",
+        if target == "off" { "on" } else { "off" }
+    );
+    Ok(())
+}
+
+fn airplane_target(output: &str) -> CliResult<&'static str> {
+    let states = output
+        .split(':')
+        .map(str::trim)
+        .filter(|state| !state.is_empty() && *state != "missing")
+        .collect::<Vec<_>>();
+    if states.is_empty()
+        || states
+            .iter()
+            .any(|state| !matches!(*state, "enabled" | "disabled"))
+    {
+        return Err(CliError::new(
+            EXIT_OPERATION,
+            format!("nmcli returned an unknown radio state {output:?}"),
+        ));
+    }
+    let target = if states.iter().all(|state| *state == "disabled") {
+        "on"
+    } else {
+        "off"
+    };
+    Ok(target)
+}
+
+fn run_radio_command(arguments: &[String]) -> CliResult<()> {
+    match arguments {
+        [command, action] if command == "radio" && action == "wifi-toggle" => toggle_wifi(),
+        [command, action] if command == "radio" && action == "airplane-toggle" => toggle_airplane(),
+        // Keep the names used by the first shortcut backend implementation as
+        // compatibility aliases. They still resolve to these two fixed
+        // actions and cannot execute arbitrary text.
+        [command, action] if command == "wifi" && action == "toggle" => toggle_wifi(),
+        [command, action] if command == "airplane" && action == "toggle" => toggle_airplane(),
+        _ => Err(CliError::new(EXIT_USAGE, usage())),
+    }
 }
 
 fn set_fan_mode(proxy: &Proxy<'_>, mode: &str) -> CliResult<()> {
@@ -657,11 +1003,14 @@ fn run(arguments: &[String]) -> CliResult<()> {
     let known_command = match arguments {
         [command] => matches!(command.as_str(), "status" | "diagnostics"),
         [command, subcommand] if command == "curve" => {
-            matches!(subcommand.as_str(), "show" | "apply")
+            matches!(subcommand.as_str(), "show" | "capture" | "apply")
         }
         [command, subcommand, _points @ ..] if command == "curve" && subcommand == "apply" => true,
         [command, profile] if command == "profile" => {
-            matches!(profile.as_str(), "performance" | "balanced" | "battery")
+            matches!(
+                profile.as_str(),
+                "performance" | "balanced" | "battery" | "cycle"
+            )
         }
         [command, mode] if command == "fan" => {
             matches!(
@@ -682,6 +1031,26 @@ fn run(arguments: &[String]) -> CliResult<()> {
         [command, subcommand] if command == "gpu" && subcommand == "boost" => true,
         [command, subcommand, value] if command == "gpu" && subcommand == "boost" => {
             !value.is_empty()
+        }
+        [command, subcommand] if command == "radio" => {
+            matches!(subcommand.as_str(), "wifi-toggle" | "airplane-toggle")
+        }
+        [command, subcommand]
+            if matches!(command.as_str(), "wifi" | "airplane") && subcommand == "toggle" =>
+        {
+            true
+        }
+        [command, subcommand] if command == "fn" => {
+            matches!(
+                subcommand.as_str(),
+                "list" | "status" | "enable" | "disable"
+            )
+        }
+        [command, subcommand, button] if command == "fn" => {
+            matches!(subcommand.as_str(), "get" | "reset") && !button.is_empty()
+        }
+        [command, subcommand, button, action] if command == "fn" => {
+            subcommand == "set" && !button.is_empty() && !action.is_empty()
         }
         _ => false,
     };
@@ -731,6 +1100,24 @@ fn run(arguments: &[String]) -> CliResult<()> {
         }
     }
 
+    // These commands are deliberately handled before opening the system bus.
+    // Fn mappings are per-user configuration and radio toggles use nmcli's
+    // native NetworkManager interface; neither is an aorusd operation.
+    if arguments.first().is_some_and(|command| command == "fn")
+        && !matches!(
+            arguments.get(1).map(String::as_str),
+            Some("status" | "enable" | "disable")
+        )
+    {
+        return run_fn_command(arguments);
+    }
+    if arguments
+        .first()
+        .is_some_and(|command| matches!(command.as_str(), "radio" | "wifi" | "airplane"))
+    {
+        return run_radio_command(arguments);
+    }
+
     let connection = system_connection()?;
     if matches!(arguments, [command] if command == "diagnostics") {
         return diagnostics(&connection);
@@ -740,12 +1127,16 @@ fn run(arguments: &[String]) -> CliResult<()> {
     match arguments {
         [command] if command == "status" => show_status(&proxy),
         [command, subcommand] if command == "curve" && subcommand == "show" => show_curve(&proxy),
+        [command, subcommand] if command == "curve" && subcommand == "capture" => {
+            capture_curve(&proxy)
+        }
         [command, subcommand, _points @ ..] if command == "curve" && subcommand == "apply" => {
             apply_curve(
                 &proxy,
                 parsed_curve.as_ref().expect("curve was parsed above"),
             )
         }
+        [command, profile] if command == "profile" && profile == "cycle" => cycle_profile(&proxy),
         [command, profile] if command == "profile" => set_profile(&proxy, profile),
         [command, mode] if command == "fan" && mode == "reapply" => reapply(&proxy),
         [command, mode] if command == "fan" => set_fan_mode(&proxy, mode),
@@ -771,6 +1162,12 @@ fn run(arguments: &[String]) -> CliResult<()> {
         }
         [command, subcommand, value] if command == "gpu" && subcommand == "boost" => {
             set_gpu_boost(&proxy, value)
+        }
+        [command, subcommand]
+            if command == "fn"
+                && matches!(subcommand.as_str(), "status" | "enable" | "disable") =>
+        {
+            native_fn_keys(&proxy, subcommand)
         }
         [command, subcommand] if command == "gpu" && subcommand == "boost" => Err(CliError::new(
             EXIT_USAGE,
@@ -837,5 +1234,58 @@ mod tests {
         assert!(parse_mapping("performance=fixed").is_err());
         assert!(parse_mapping("unknown=gaming").is_err());
         assert!(parse_mapping("performance").is_err());
+    }
+
+    #[test]
+    fn fn_parser_accepts_only_stable_ids() {
+        assert_eq!(
+            parse_fn_button("brightness-up").unwrap(),
+            PhysicalButtonId::BrightnessUp
+        );
+        assert_eq!(
+            parse_fn_action("cycle-power-profile").unwrap(),
+            FnAction::CyclePowerProfile
+        );
+        assert!(parse_fn_button("BrightnessUp").is_err());
+        assert!(parse_fn_action("fan 100%").is_err());
+    }
+
+    #[test]
+    fn direct_fan_actions_are_valid_write_mode_choices() {
+        assert_eq!(parse_fn_action("fan-gaming").unwrap(), FnAction::FanGaming);
+        assert_eq!(
+            parse_fn_action("fan-reapply").unwrap(),
+            FnAction::FanReapply
+        );
+    }
+
+    #[test]
+    fn invalid_fn_action_does_not_open_the_system_bus() {
+        let error = run(&[
+            "fn".to_owned(),
+            "set".to_owned(),
+            "fan".to_owned(),
+            "not-an-action".to_owned(),
+        ])
+        .unwrap_err();
+        assert_eq!(error.code, EXIT_USAGE);
+    }
+
+    #[test]
+    fn profile_cycle_and_radio_state_parsers_are_deterministic() {
+        assert_eq!(
+            next_profile(PowerProfile::Performance),
+            PowerProfile::Balanced
+        );
+        assert_eq!(next_profile(PowerProfile::Balanced), PowerProfile::Battery);
+        assert_eq!(
+            next_profile(PowerProfile::Battery),
+            PowerProfile::Performance
+        );
+        assert_eq!(wifi_target("enabled\n").unwrap(), "off");
+        assert_eq!(wifi_target("disabled\n").unwrap(), "on");
+        assert_eq!(airplane_target("enabled:enabled").unwrap(), "off");
+        assert_eq!(airplane_target("disabled:disabled").unwrap(), "on");
+        assert!(airplane_target("enabled:unknown").is_err());
     }
 }

@@ -4,6 +4,10 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 cargo fmt --all --check
+if cargo tree --all-features -e features -i zbus | grep -F 'zbus feature "tokio"' >/dev/null; then
+  printf '%s\n' 'zbus/tokio must stay disabled; it makes blocking daemon calls panic inside the D-Bus runtime' >&2
+  exit 1
+fi
 cargo test --all-features
 cargo clippy --all-targets --all-features -- -D warnings
 cargo build --release --all-features
@@ -24,14 +28,43 @@ PY
 
 if command -v desktop-file-validate >/dev/null 2>&1; then
   desktop-file-validate packaging/io.github.aoruslinux.Control.desktop
+  desktop-file-validate packaging/io.github.aoruslinux.Control.Autostart.desktop
+fi
+if udevadm verify --help >/dev/null 2>&1; then
+  udevadm verify packaging/70-aorus-brightness-hid-bpf.rules
+fi
+if [[ -f /lib/modules/$(uname -r)/build/Makefile ]]; then
+  make -C brightness/als W=1 check
+  make -C brightness/als clean
+fi
+if [[ -n ${UDEV_HID_BPF_SOURCE:-} ]]; then
+  tools/brightness-hid-bpf-build.sh target/aorus-brightness.bpf.o
 fi
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 DESTDIR=$stage ./install.sh
 test -x "$stage/usr/local/libexec/aorusd"
+test -x "$stage/usr/local/libexec/aorus-auto-brightness"
+test -f "$stage/usr/lib/systemd/user/aorus-auto-brightness.service"
+test -x "$stage/usr/local/libexec/aorus-brightness-hid-bpf"
+test -x "$stage/usr/local/libexec/aorus-control-fn-identity-test"
+test -x "$stage/usr/local/libexec/aorus-control-fn-buttons-capture"
+test -f "$stage/usr/lib/udev/rules.d/70-aorus-brightness-hid-bpf.rules"
+test -f "$stage/etc/xdg/autostart/io.github.aoruslinux.Control.desktop"
+if [[ -f target/aorus-brightness.bpf.o ]]; then
+  test -f "$stage/usr/local/lib/aorus-control/0010-Gigabyte__AERO-16-YE5.bpf.o"
+fi
 test -f "$stage/etc/aorus-control/config.toml"
 sed 's|^ExecStart=.*|ExecStart=/bin/true|' packaging/aorusd.service >"$stage/aorusd.service"
 systemd-analyze verify "$stage/aorusd.service"
+sed 's|^ExecStart=.*|ExecStart=/bin/true|' packaging/aorus-auto-brightness.service \
+  >"$stage/aorus-auto-brightness.service"
+systemd-analyze --user verify "$stage/aorus-auto-brightness.service"
 DESTDIR=$stage ./uninstall.sh
 test ! -e "$stage/usr/local/libexec/aorusd"
+test ! -e "$stage/usr/local/libexec/aorus-auto-brightness"
+test ! -e "$stage/usr/local/libexec/aorus-brightness-hid-bpf"
+test ! -e "$stage/usr/local/libexec/aorus-control-fn-identity-test"
+test ! -e "$stage/usr/local/libexec/aorus-control-fn-buttons-capture"
+test ! -e "$stage/etc/xdg/autostart/io.github.aoruslinux.Control.desktop"
 test -f "$stage/etc/aorus-control/config.toml"

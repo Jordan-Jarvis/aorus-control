@@ -411,9 +411,10 @@ impl HardwareGuard<'_> {
                     actual: "rollback readback differs",
                 });
             }
-            if previous_mode.is_profile() {
-                self.write_fan_mode(previous_mode)?;
-            }
+            // Restore exactly what firmware reported, including Auto/Fixed if
+            // an external tool had selected it. This rollback never writes a
+            // hard-coded fan speed.
+            self.write_fan_mode(previous_mode)?;
             Ok(())
         });
         match rollback {
@@ -1081,6 +1082,32 @@ mod tests {
             );
             fs::remove_dir_all(root).unwrap();
         }
+    }
+
+    #[test]
+    fn failed_curve_write_restores_an_externally_selected_auto_mode() {
+        let (root, hardware, fake) = fake_fixture();
+        let platform = hardware.paths().platform.as_ref().unwrap();
+        fake.values
+            .lock()
+            .unwrap()
+            .insert(platform.join("fan_mode"), "4".to_owned());
+        let proposed = FanCurve::from_valid_array(std::array::from_fn(|index| {
+            FanPoint::new(index as u8 * 6, index as u8 * 12)
+        }));
+        fake.fail_once_at(4);
+        assert!(matches!(
+            hardware.apply_curve(&proposed),
+            Err(HardwareError::Transaction {
+                rollback_verified: true,
+                ..
+            })
+        ));
+        assert_eq!(
+            hardware.status(DaemonMode::WriteEnabled).unwrap().fan_mode,
+            Some(FanMode::Auto)
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

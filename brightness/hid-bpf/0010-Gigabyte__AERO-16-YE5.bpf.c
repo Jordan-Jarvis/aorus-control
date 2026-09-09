@@ -1,0 +1,188 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
+#include "vmlinux.h"
+#include "hid_bpf.h"
+#include "hid_bpf_helpers.h"
+#include <bpf/bpf_tracing.h>
+
+#define VID_GIGABYTE 0x1044
+#define PID_AERO_KEYBOARD 0x7a3a
+#define ORIGINAL_RDESC_SIZE 253
+#define FIXED_RDESC_SIZE (ORIGINAL_RDESC_SIZE + sizeof(translated_rdesc))
+#define VENDOR_REPORT_ID 0x04
+
+HID_BPF_CONFIG(
+	HID_DEVICE(BUS_USB, HID_GROUP_GENERIC, VID_GIGABYTE, PID_AERO_KEYBOARD)
+);
+
+/* Exact descriptor from USB interface 2 on the AERO 16 YE5 (P86VE). */
+static const __u8 original_rdesc[ORIGINAL_RDESC_SIZE] = {
+	0x05, 0x01, 0x09, 0x02, 0xa1, 0x01, 0x85, 0x01, 0x09, 0x01, 0xa1, 0x00,
+	0x05, 0x09, 0x15, 0x00, 0x25, 0x01, 0x19, 0x01, 0x29, 0x05, 0x75, 0x01,
+	0x95, 0x05, 0x81, 0x02, 0x95, 0x03, 0x81, 0x01, 0x05, 0x01, 0x16, 0x01,
+	0x80, 0x26, 0xff, 0x7f, 0x09, 0x30, 0x09, 0x31, 0x75, 0x10, 0x95, 0x02,
+	0x81, 0x06, 0x15, 0x81, 0x25, 0x7f, 0x09, 0x38, 0x75, 0x08, 0x95, 0x01,
+	0x81, 0x06, 0x05, 0x0c, 0x0a, 0x38, 0x02, 0x95, 0x01, 0x81, 0x06, 0xc0,
+	0xc0, 0x05, 0x01, 0x09, 0x80, 0xa1, 0x01, 0x85, 0x02, 0x19, 0x81, 0x29,
+	0x83, 0x15, 0x00, 0x25, 0x01, 0x75, 0x01, 0x95, 0x03, 0x81, 0x02, 0x95,
+	0x05, 0x81, 0x01, 0xc0, 0x05, 0x0c, 0x09, 0x01, 0xa1, 0x01, 0x85, 0x03,
+	0x19, 0x00, 0x2a, 0xff, 0x07, 0x15, 0x00, 0x26, 0xff, 0x07, 0x95, 0x01,
+	0x75, 0x10, 0x81, 0x00, 0xc0, 0x06, 0x02, 0xff, 0x09, 0x01, 0xa1, 0x01,
+	0x85, 0x04, 0x15, 0x00, 0x26, 0xff, 0x00, 0x09, 0x03, 0x75, 0x08, 0x95,
+	0x03, 0x81, 0x00, 0xc0, 0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x85, 0x05,
+	0x05, 0x07, 0x95, 0x01, 0x75, 0x08, 0x81, 0x03, 0x95, 0xe8, 0x75, 0x01,
+	0x15, 0x00, 0x25, 0x01, 0x05, 0x07, 0x19, 0x00, 0x29, 0xe7, 0x81, 0x00,
+	0xc0, 0x05, 0x01, 0x09, 0x02, 0xa1, 0x01, 0x85, 0x06, 0x15, 0x00, 0x26,
+	0xff, 0x7f, 0x09, 0x30, 0x09, 0x31, 0x75, 0x10, 0x95, 0x02, 0x81, 0x02,
+	0xc0, 0x06, 0x89, 0xff, 0x09, 0x10, 0xa1, 0x01, 0x85, 0x5a, 0x09, 0x01,
+	0x15, 0x00, 0x26, 0xff, 0x00, 0x75, 0x08, 0x95, 0x10, 0xb1, 0x00, 0xc0,
+	0x05, 0x01, 0x09, 0x0c, 0xa1, 0x01, 0x85, 0x07, 0x15, 0x00, 0x25, 0x01,
+	0x09, 0xc6, 0x95, 0x01, 0x75, 0x01, 0x81, 0x06, 0x75, 0x07, 0x81, 0x03,
+	0xc0,
+};
+
+/*
+ * Every report ID below is new, so the original report collections stay
+ * intact and all transformed reports enter hid-input as ordinary keyboard
+ * identities. The report IDs intentionally leave no collection for F18 or
+ * F21: display is on another HID interface and airplane mode is already
+ * handled by Linux. Touchpad lock is also deliberately absent: that press
+ * emits a native interface-0 Super+Ctrl+XF86TouchpadToggle/F24 sequence.
+ * Translating its interface-2 report as another identity would toggle the
+ * touchpad twice.
+ *
+ * The relative fields are deliberate. For brightness, fan, Wi-Fi, square-X,
+ * and AI, the capture proves one press report but no release report. Relative
+ * HID semantics supply native pulse/repeat behavior without inventing release
+ * state or a userspace repeat timer. Sleep is different: both 02 02 and 02
+ * 00 were captured, so its field is absolute and preserves that exact
+ * press/release pair while suppressing the original System Sleep report.
+ */
+static const __u8 translated_rdesc[] = {
+	0x05, 0x07,       /* Usage Page (Keyboard/Keypad) */
+	0x09, 0x06,       /* Usage (Keyboard) */
+	0xa1, 0x01,       /* Collection (Application) */
+	0x15, 0x00,       /* Logical Minimum (0) */
+	0x25, 0x01,       /* Logical Maximum (1) */
+
+	/* Report ID 8: six captured press reports, each a relative pulse. */
+	0x85, 0x08,
+	0x09, 0x68,       /* F13: 04 00 00 7d, brightness down */
+	0x09, 0x69,       /* F14: 04 00 00 7e, brightness up */
+	0x09, 0x6a,       /* F15: 04 00 00 84, fan */
+	0x09, 0x6c,       /* F17: 04 00 00 7c, Wi-Fi */
+	0x09, 0x6e,       /* F19: 04 00 00 80, square-X */
+	0x09, 0x71,       /* F22: 04 00 00 88, AI */
+	0x75, 0x01, 0x95, 0x06,
+	0x81, 0x06,       /* Input (Data, Variable, Relative) */
+	0x75, 0x02, 0x95, 0x01, 0x81, 0x03,
+
+	/* F16: 02 02 press / 02 00 release (sleep), exact stateful pair. */
+	0x85, 0x09,
+	0x09, 0x6b,       /* Usage (Keyboard F16) */
+	0x75, 0x01, 0x95, 0x01, 0x81, 0x02,
+	0x75, 0x07, 0x95, 0x01, 0x81, 0x03,
+
+	0xc0,             /* End Collection */
+};
+static __always_inline bool descriptor_matches(const __u8 *descriptor)
+{
+	int i;
+
+	for (i = 0; i < ORIGINAL_RDESC_SIZE; i++)
+		if (descriptor[i] != original_rdesc[i])
+			return false;
+
+	return true;
+}
+
+SEC(HID_BPF_RDESC_FIXUP)
+int BPF_PROG(aero_16_ye5_fix_rdesc, struct hid_bpf_ctx *hctx)
+{
+	__u8 *data;
+
+	if (hctx->size != ORIGINAL_RDESC_SIZE)
+		return 0;
+
+	data = hid_bpf_get_data(hctx, 0, HID_MAX_DESCRIPTOR_SIZE);
+	if (!data || !descriptor_matches(data))
+		return 0;
+
+	__builtin_memcpy(data + ORIGINAL_RDESC_SIZE, translated_rdesc,
+			 sizeof(translated_rdesc));
+	return FIXED_RDESC_SIZE;
+}
+
+SEC(HID_BPF_DEVICE_EVENT)
+int BPF_PROG(aero_16_ye5_fix_event, struct hid_bpf_ctx *hctx,
+	     enum hid_report_type type)
+{
+	__u8 *data;
+	__u8 key_mask;
+
+	if (type != HID_INPUT_REPORT)
+		return 0;
+
+	/* Only the seven capture-proven interface-2 vendor reports are translated. */
+	if (hctx->size == 4) {
+		data = hid_bpf_get_data(hctx, 0, 4);
+		if (!data || data[0] != VENDOR_REPORT_ID || data[1] || data[2])
+			return 0;
+
+		/* Each report becomes a one-byte, modifierless F-key pulse. */
+		if (data[3] == 0x7d) {
+			key_mask = 0x01;
+		} else if (data[3] == 0x7e) {
+			key_mask = 0x02;
+		} else if (data[3] == 0x84) {
+			key_mask = 0x04;
+		} else if (data[3] == 0x7c) {
+			key_mask = 0x08;
+		} else if (data[3] == 0x80) {
+			key_mask = 0x10;
+		} else if (data[3] == 0x88) {
+			key_mask = 0x20;
+		} else {
+			/* Includes the unmodified airplane report 07 01. */
+			return 0;
+		}
+
+		data[0] = 0x08;
+		data[1] = key_mask;
+		return 2;
+	}
+
+	/* The captured sleep pair is the only interface-2 report with release state. */
+	if (hctx->size == 2) {
+		data = hid_bpf_get_data(hctx, 0, 2);
+		if (!data || data[0] != 0x02 ||
+		    (data[1] != 0x02 && data[1] != 0x00))
+			return 0;
+
+		data[0] = 0x09;
+		/* Preserve the captured press/release value, not System Sleep. */
+		data[1] = data[1] == 0x02;
+		return 2;
+	}
+
+	return 0;
+}
+
+HID_BPF_OPS(aero_16_ye5_brightness) = {
+	.hid_device_event = (void *)aero_16_ye5_fix_event,
+	.hid_rdesc_fixup = (void *)aero_16_ye5_fix_rdesc,
+};
+
+SEC("syscall")
+int probe(struct hid_bpf_probe_args *ctx)
+{
+	ctx->retval = -EINVAL;
+	if (ctx->rdesc_size == ORIGINAL_RDESC_SIZE &&
+	    __builtin_memcmp(ctx->rdesc, original_rdesc,
+			     ORIGINAL_RDESC_SIZE) == 0)
+		ctx->retval = 0;
+
+	return 0;
+}
+
+char _license[] SEC("license") = "GPL";

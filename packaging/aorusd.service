@@ -1,11 +1,12 @@
 [Unit]
-Description=AORUS Control hardware daemon (shadow mode)
-Documentation=https://github.com/tangalbert919/gigabyte-laptop-wmi
+Description=AORUS Control hardware daemon
+Documentation=https://github.com/Jordan-Jarvis/aorus-control
 After=dbus.service systemd-modules-load.service com.system76.PowerDaemon.service
 Wants=dbus.service
 
 [Service]
-Type=simple
+Type=dbus
+BusName=io.github.aoruslinux.Control1
 User=root
 Group=root
 ExecStart=/usr/local/libexec/aorusd

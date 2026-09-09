@@ -14,6 +14,7 @@ This is the integration contract between `aorusd`, `aorusctl`, and the native UI
 | `GetStatus` | none | `a{sv}` |
 | `GetProfileMappings` | none | `a{sy}` mapping normalized power-profile names to fan-mode values |
 | `GetFanCurve` | none | `a(yy)` containing exactly 15 `(temperature, raw_speed)` pairs when available |
+| `CaptureFanCurve` | none | captures, validates, stores, and returns the current 15 firmware points without selecting Custom or changing the active fan profile |
 | `SetPowerProfile` | `s` (`performance`, `balanced`, or `battery`) | none |
 | `SetFanMode` | `y` (0 Normal, 1 Silent, 2 Gaming, 3 Custom) | none |
 | `ReapplyFanProfile` | none | none |
@@ -22,6 +23,7 @@ This is the integration contract between `aorusd`, `aorusctl`, and the native UI
 | `SetChargeMode` | `y` | none |
 | `SetChargeLimit` | `y` | none |
 | `SetGpuBoost` | `y` | none |
+| `SetNativeFnKeysEnabled` | `b` | enables/disables the exact-model HID-BPF translation and its persistent udev marker |
 
 Selecting or reapplying Custom always rewrites and verifies the stored 15-point
 curve before activating Custom. The daemon never merely selects Custom after a
@@ -32,11 +34,11 @@ profiles.
 `SetPowerProfile` is available in shadow mode: it changes the System76 power
 policy and lets the existing Python profile-sync service synchronize the fan
 profile. Every direct AORUS mutation (`SetFanMode`, `ReapplyFanProfile`,
-`SetFanCurve`, `SetProfileMappings`, charging, and GPU methods) fails while
+`CaptureFanCurve`, `SetFanCurve`, `SetProfileMappings`, charging, GPU, and native Fn-key methods) fails while
 the daemon is in shadow mode. Direct writes require write-enabled mode, the
 Python service to be inactive, and polkit action
 `io.github.aoruslinux.control.modify`; write mode is never enabled by the
-normal Phase 1 installer.
+normal installer without the explicit migration helper.
 
 ## Status keys
 
@@ -58,6 +60,9 @@ Keys may be added compatibly. Missing/unsupported readings are omitted rather th
 | `graphics_mode` | `s` | System76 graphics mode when available |
 | `graphics_power` | `b` | System76 discrete graphics power when available |
 | `custom_curve_available` | `b` | a validated custom curve is stored and may be selected/mapped |
+| `native_fn_keys_supported` | `b` | the exact DMI/HID-gated native translation is installed for this laptop |
+| `native_fn_keys_enabled` | `b` | persistent loading is enabled |
+| `native_fn_keys_active` | `b` | the production translation is attached to every matching interface |
 | `product_name` / `product_version` | `s` | DMI product identity |
 | `bios_version` / `bios_date` | `s` | DMI firmware identity |
 | `kernel_release` | `s` | running kernel release |

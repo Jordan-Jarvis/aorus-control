@@ -5,6 +5,7 @@ shopt -s nullglob
 readonly DEFAULT_DURATION=20
 duration=$DEFAULT_DURATION
 output_dir=
+generated_output=false
 no_prompt=false
 capture_pids=()
 capture_labels=()
@@ -23,6 +24,15 @@ handle_signal() {
 }
 
 trap handle_signal INT TERM
+
+restore_output_owner() {
+    if [[ $generated_output == true && ${SUDO_UID:-} =~ ^[0-9]+$ && ${SUDO_GID:-} =~ ^[0-9]+$ ]]; then
+        chown -R -- "$SUDO_UID:$SUDO_GID" "$output_dir" 2>/dev/null ||
+            printf 'brightness-capture: warning: output remains root-owned: %s\n' "$output_dir" >&2
+    fi
+}
+
+trap restore_output_owner EXIT
 
 usage() {
     cat <<'EOF'
@@ -129,6 +139,7 @@ have timeout || die "timeout is required (provided by coreutils)"
 if [[ -z $output_dir ]]; then
     tmp_root=${TMPDIR:-/tmp}
     output_dir=$(mktemp -d "$tmp_root/aorus-brightness-capture.XXXXXX")
+    generated_output=true
 else
     mkdir -p -- "$output_dir"
 fi
@@ -274,8 +285,11 @@ if [[ $interrupted == true ]]; then
 fi
 
 {
-    printf '\nEvent-name search (absence is inconclusive unless both keys were pressed):\n'
-    if grep -RHEn 'KEY_BRIGHTNESS(UP|DOWN)|MSC_SCAN|KEY_(UNKNOWN|RESERVED)' "$output_dir/events" 2>/dev/null; then
+    printf '\nActual input-event search (absence is inconclusive unless both keys were pressed):\n'
+    if grep -RHEn \
+        -e '^[[:space:]]*Event: time .*(KEY_BRIGHTNESS(UP|DOWN)|MSC_SCAN|KEY_(UNKNOWN|RESERVED))' \
+        -e '^[[:space:]]*event[0-9]+[[:space:]]+KEYBOARD_KEY[[:space:]].*(KEY_BRIGHTNESS(UP|DOWN)|MSC_SCAN|KEY_(UNKNOWN|RESERVED))' \
+        "$output_dir/events" 2>/dev/null; then
         :
     else
         printf '  no matching lines found\n'

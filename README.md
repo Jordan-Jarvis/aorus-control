@@ -1,120 +1,180 @@
 # AORUS Control for Linux
 
-Native Linux controls for supported GIGABYTE AERO/AORUS laptops. The first
-target is the tested GIGABYTE AERO 16 YE5 (`P86VE`) on Pop!_OS 24.04.
+Native fan, power, temperature, charging, and Fn-key controls for the
+GIGABYTE AERO 16 YE5 (`P86VE`). The application consists of a small privileged
+Rust daemon, a native Rust desktop UI, and a CLI.
 
-The project is intentionally profile-based. Normal, Silent, Gaming, and
-Custom are firmware fan profiles; the normal workflow does not set a fixed
-fan speed or write `fan_custom_speed`. Custom curves contain the firmware's 15
-temperature/raw-level points and are applied only through the daemon's
-validation, readback, and rollback path.
+> [!WARNING]
+> Hardware writes and the HID-BPF Fn-key fix are intentionally restricted to
+> the tested `GIGABYTE AERO 16 YE5 / P86VE`. Do not remove the model,
+> interface, or report-descriptor checks to make another laptop appear
+> supported.
 
-## Components
+## Features
 
-- `aorusd` — privileged system daemon. It owns hardware writes and exposes the
-  documented system D-Bus API.
-- `aorusctl` — small dependency-minimal CLI client.
-- `aorus-control` — unprivileged native UI (when the `ui` feature is built).
+- CPU/GPU temperature and dual-fan RPM telemetry
+- Firmware Normal, Silent, Gaming, and Custom fan profiles
+- Interactive 15-point temperature/fan-curve editor with validation and rollback
+- Pop!_OS/System76 power-profile synchronization
+- Battery charge mode and charge-limit controls
+- Capability-gated GPU boost and USB charging controls
+- Native, remappable laptop Fn buttons through HID-BPF, evdev, XKB, and COSMIC
+- Optional ambient-light integration and automatic brightness
+- StatusNotifierItem tray icon; closing the window keeps the UI resident
+- CLI access through `aorusctl`
 
-The API is documented in [docs/dbus-api.md](docs/dbus-api.md). The package
-installer runs `aorusd` in `shadow` mode by default, where it reports state and
-can ask System76 to change the CPU power policy, but never writes AORUS sysfs.
-Until an exclusive test window has stored a validated curve, the curve editor
-is unavailable because reading every firmware point requires selector writes.
-The existing
-`aorus-power-profile-sync.service`
-remains the profile-sync writer during Phase 1. It is never stopped or
-disabled by `install.sh`.
+Fan control is profile-based. Normal operation never writes a fixed fan speed
+or `fan_custom_speed`; custom curves are validated and read back by `aorusd`.
+
+## Architecture and safety
+
+| Component | Responsibility |
+| --- | --- |
+| `aorusd` | Sole privileged hardware writer and system D-Bus service |
+| `aorus-control` | Unprivileged native UI and tray process |
+| `aorusctl` | Unprivileged CLI client |
+| `aorus-auto-brightness` | Optional per-user automatic-brightness policy |
+
+`aorusd` installs in read-only **shadow mode** by default. An explicit
+migration enables Rust hardware writes only after verifying that the previous
+Python profile-sync service is active and can be restored. The migration then
+stops that service before enabling Rust, so both writers cannot run together.
+
+The Fn-key implementation is also native: firmware report → exact-model
+HID-BPF fixup → `hid-generic` → evdev → XKB → COSMIC. It does not use a
+`hidraw` listener, `uinput`, synthetic input, polling, or a userspace repeat
+loop. See [brightness/README.md](brightness/README.md) for the hardware gates
+and report map.
+
+## Requirements
+
+- GIGABYTE AERO 16 YE5 (`P86VE`)
+- Linux with systemd, D-Bus, polkit, udev, and the `aorus_laptop` driver from
+  [gigabyte-laptop-wmi](https://github.com/tangalbert919/gigabyte-laptop-wmi)
+- Pop!_OS 24.04 with COSMIC for the tested power-profile and global-shortcut
+  integration
+- Rust stable with Edition 2024 support
+- A C toolchain, Clang, pkg-config, libbpf, libudev, libelf, and matching
+  kernel headers for the native Fn-key and ambient-light modules
+
+On Ubuntu/Pop!_OS, the development packages are typically:
+
+```sh
+sudo apt-get install -y \
+  build-essential clang git libbpf-dev libelf-dev libudev-dev pkg-config \
+  "linux-headers-$(uname -r)"
+```
 
 ## Build and install
 
-Build on the target machine with Rust/Cargo installed:
+```sh
+git clone https://github.com/Jordan-Jarvis/aorus-control.git
+cd aorus-control
 
-```text
-cargo build --release
+cargo build --release --locked
+
+# Build the pinned upstream HID-BPF loader and this laptop's gated BPF object.
+./tools/brightness-hid-bpf-loader-build.sh
+
+sudo ./install.sh
 ```
 
-The package installer must be run by an operator with root privileges; it does
-not invoke `sudo` itself:
+The installer places binaries under `/usr/local`, installs systemd, D-Bus,
+polkit, udev, desktop, icon, and XDG-autostart files, and preserves an existing
+`/etc/aorus-control/config.toml`. It never invokes `sudo` itself. Use
+`DESTDIR=/path/to/staging ./install.sh` to inspect a package staging tree
+without changing the live system.
 
-```text
-./install.sh
-```
+Reinstalling on a machine already migrated to Rust preserves write ownership.
+A first installation remains in shadow mode until the explicit cutover:
 
-It installs the binaries, systemd/D-Bus/polkit integration, desktop entry,
-configuration template, and explicit migration/rollback helpers. Existing
-`/etc/aorus-control/config.toml` is preserved. The daemon uses
-`ConfigurationDirectory=aorus-control`; the normal shadow unit does not
-conflict with or stop the Python profile-sync service. To create a package
-staging tree
-without touching the live system, use `DESTDIR=/path/to/staging ./install.sh`
-after building; the live systemd service is not enabled for a staged install.
-
-## CLI
-
-```text
-aorusctl status
-aorusctl curve show
-aorusctl curve apply TEMP:RAW_SPEED ... # exactly 15 points
-aorusctl profile performance|balanced|battery
-aorusctl fan normal|silent|gaming|custom
-aorusctl fan reapply
-aorusctl mappings get
-aorusctl mappings set PROFILE=FAN_PROFILE [...]
-aorusctl charge mode 0|1|normal|custom
-aorusctl charge limit 60-100
-aorusctl gpu boost VALUE
-aorusctl diagnostics
-```
-
-Read-only commands work for ordinary users when the daemon is running.
-Mutating commands go through `aorusd` and require its polkit action. System76
-power-profile changes work in shadow mode; direct AORUS hardware changes do
-not. `aorusctl` returns non-zero errors for an
-unavailable daemon, authorization failure, invalid value, or hardware/API
-failure.
-
-## Ownership and rollback
-
-Do not run the migration helper until the complete Phase 1 application has
-passed shadow and exclusive hardware tests. It is deliberately not called by
-the installer:
-
-```text
+```sh
 sudo /usr/local/libexec/aorus-control-migrate-to-rust --confirm-rust-write
 ```
 
-That operation stops and disables the Python service only after checking that
-`aorusd` is healthy and reporting shadow mode. If the cutover fails, it
-restores Python automatically where possible. The manual rollback is:
+That helper requires the previous `aorus-power-profile-sync.service` as a
+verified fallback. It creates a private backup under
+`/var/lib/aorus-control/migration-backups/` and restores Python automatically
+if the cutover fails.
 
-```text
+Launch **AORUS Control** from the application menu. Native Fn-key support can
+then be enabled under **Hotkeys → Laptop Fn buttons**, or from the desktop user
+account with:
+
+```sh
+aorusctl fn enable
+```
+
+Fn-button action changes save immediately and continue working when the UI is
+hidden or fully exited. Airplane mode and the physical volume buttons remain
+Linux-owned and are not remapped.
+
+## CLI
+
+Run `aorusctl --help` for the complete command list. Common commands are:
+
+```sh
+aorusctl status
+aorusctl diagnostics
+aorusctl profile performance
+aorusctl fan gaming
+aorusctl fan reapply
+aorusctl curve show
+aorusctl mappings get
+aorusctl fn list
+aorusctl fn set brightness-down disabled
+```
+
+The CLI never writes sysfs directly. Mutating operations use the daemon's
+typed D-Bus API and polkit authorization.
+
+## Configuration
+
+| Path | Purpose |
+| --- | --- |
+| `/etc/aorus-control/config.toml` | System profile and fan mappings |
+| `~/.config/aorus-control/fn-buttons.toml` | Per-user physical Fn actions |
+| `~/.config/aorus-control/auto-brightness.toml` | Optional brightness policy |
+| `~/.config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom` | Narrowly owned COSMIC shortcut records |
+
+Hardware paths are discovered by device identity; unstable `hwmonN` and
+`eventN` numbers are never persisted.
+
+## Rollback and uninstall
+
+Restore the previous Python writer before removing a write-enabled Rust
+installation:
+
+```sh
 sudo /usr/local/libexec/aorus-control-rollback-to-python --confirm-python
+sudo ./uninstall.sh
 ```
 
-Before the persistent cutover, use the temporary exclusive hardware test
-window to validate Rust as the sole writer while automatically restoring the
-Python service afterward. The installer places the helper at
-`/usr/local/libexec/aorus-control-exclusive-hardware-test`; its procedure and
-test guidance are documented in
-[docs/exclusive-hardware-test.md](docs/exclusive-hardware-test.md):
+Uninstall preserves `/etc/aorus-control/config.toml` and
+`/var/lib/aorus-control`.
 
-```text
-sudo /usr/local/libexec/aorus-control-exclusive-hardware-test --confirm-exclusive
+## Development
+
+Run the complete non-destructive check suite with:
+
+```sh
+./tools/check.sh
 ```
 
-Uninstall first requires rollback if Rust write mode is active. Uninstall
-preserves `/etc/aorus-control/config.toml` and `/var/lib/aorus-control`.
+It runs formatting, tests, Clippy, release builds, packaging validation, udev
+validation, and an ambient-light module build check. Hardware-writing tests
+are separate, explicit, guarded procedures documented in
+[docs/exclusive-hardware-test.md](docs/exclusive-hardware-test.md) and
+[docs/brightness-debug.md](docs/brightness-debug.md).
 
-## Hardware and limitations
+Additional references:
 
-The AORUS driver exposes EC temperatures, fan RPM, charging controls, GPU
-boost, and a 15-point fan curve through sysfs. Hardware paths are discovered
-by device name at runtime; numbered `hwmonN` paths are not stable. The tested
-machine's read-only baseline is in
-[docs/hardware-baseline.md](docs/hardware-baseline.md).
+- [D-Bus API](docs/dbus-api.md)
+- [Hardware baseline](docs/hardware-baseline.md)
+- [Native Fn-key implementation](brightness/README.md)
+- [Development plan](docs/development-plan.md)
+- [Remaining validation](docs/todo.md)
 
-Unsupported or unverified controls must be shown as unavailable. RGB control,
-read-only USB charging toggles, fixed-speed control in the main UI, and
-unverified graphics-mode switching are intentionally outside the normal
-workflow.
+## License
+
+[MIT](LICENSE)

@@ -16,6 +16,7 @@ use crate::config::Config;
 use crate::curve::{FanCurve, FanPoint};
 use crate::hardware::{Hardware, HardwareError};
 use crate::model::{DaemonMode, FanMode, PowerProfile, Status};
+use crate::native_keys;
 use crate::profile;
 
 const POLKIT_ACTION: &str = "io.github.aoruslinux.control.modify";
@@ -45,6 +46,7 @@ type StateSnapshot = (DaemonMode, Option<Arc<Hardware>>, Config, Option<String>)
 #[derive(Clone)]
 pub struct AorusControl {
     state: Arc<Mutex<State>>,
+    mutations: Arc<Mutex<()>>,
 }
 
 impl AorusControl {
@@ -86,6 +88,7 @@ impl AorusControl {
                 last_profile: None,
                 curve_cache: None,
             })),
+            mutations: Arc::new(Mutex::new(())),
         })
     }
 
@@ -251,7 +254,7 @@ impl AorusControl {
         }
     }
 
-    fn handle_profile(
+    fn handle_profile_unlocked(
         &self,
         profile: PowerProfile,
         reason: &str,
@@ -303,8 +306,25 @@ impl AorusControl {
         Ok(())
     }
 
+    fn handle_profile(
+        &self,
+        profile: PowerProfile,
+        reason: &str,
+        deduplicate: bool,
+    ) -> Result<(), String> {
+        let _guard = self
+            .mutations
+            .lock()
+            .map_err(|_| "daemon mutation lock poisoned".to_owned())?;
+        self.handle_profile_unlocked(profile, reason, deduplicate)
+    }
+
     fn reapply_current(&self, reason: &str) -> Result<(), String> {
         self.handle_profile(profile::current_profile()?, reason, false)
+    }
+
+    fn reapply_current_unlocked(&self, reason: &str) -> Result<(), String> {
+        self.handle_profile_unlocked(profile::current_profile()?, reason, false)
     }
 
     fn mutate<T>(
@@ -316,6 +336,10 @@ impl AorusControl {
         self.require_write_mode()
             .map_err(zbus::fdo::Error::Failed)?;
         authorize(header)?;
+        let _guard = self
+            .mutations
+            .lock()
+            .map_err(|_| zbus::fdo::Error::Failed("daemon mutation lock poisoned".to_owned()))?;
         // Recheck after a potentially interactive polkit round-trip. The
         // write-mode service also Conflicts= with Python at the systemd layer.
         self.require_write_mode()
@@ -323,8 +347,20 @@ impl AorusControl {
         operation(self).map_err(|error| zbus::fdo::Error::Failed(self.remember_error(error)))
     }
 
-    fn set_mappings(&self, requested: HashMap<String, u8>) -> Result<(), String> {
-        let mut config = self.snapshot()?.2;
+    fn replace_config(&self, config: Config) -> Result<(), String> {
+        config
+            .save_atomic(self.config_path()?)
+            .map_err(|error| error.to_string())?;
+        self.state
+            .lock()
+            .map_err(|_| "daemon state lock poisoned".to_owned())?
+            .config = config;
+        Ok(())
+    }
+
+    fn set_mappings(&self, requested: HashMap<String, u8>) -> Result<Config, String> {
+        let previous = self.snapshot()?.2;
+        let mut config = previous.clone();
         for (profile_name, mode_value) in requested {
             let profile = profile_name
                 .parse::<PowerProfile>()
@@ -340,6 +376,19 @@ impl AorusControl {
                 .map_err(|error| error.to_string())?;
         }
 
+        self.replace_config(config)?;
+        Ok(previous)
+    }
+
+    fn capture_current_curve(&self) -> Result<FanCurve, String> {
+        let curve = self
+            .hardware()?
+            .read_curve()
+            .map_err(|error| self.forget_hardware(format!("hardware curve capture: {error}")))?;
+        let mut config = self.snapshot()?.2;
+        config
+            .set_custom_curve(curve.clone())
+            .map_err(|error| error.to_string())?;
         config
             .save_atomic(self.config_path()?)
             .map_err(|error| error.to_string())?;
@@ -347,7 +396,9 @@ impl AorusControl {
             .lock()
             .map_err(|_| "daemon state lock poisoned".to_owned())?
             .config = config;
-        Ok(())
+        self.remember_curve(curve.clone());
+        self.clear_error();
+        Ok(curve)
     }
 }
 
@@ -415,6 +466,14 @@ impl AorusControl {
                 put_string(&mut values, "hwmon_path", path.display().to_string());
             }
         }
+        let native_keys = native_keys::status();
+        put(
+            &mut values,
+            "native_fn_keys_supported",
+            native_keys.supported,
+        );
+        put(&mut values, "native_fn_keys_enabled", native_keys.enabled);
+        put(&mut values, "native_fn_keys_active", native_keys.active);
         Ok(values)
     }
 
@@ -467,12 +526,16 @@ impl AorusControl {
         // This is safe in shadow mode: System76 remains the CPU-policy authority,
         // and the active Python service performs the corresponding fan-profile write.
         authorize(&header)?;
+        let _guard = self
+            .mutations
+            .lock()
+            .map_err(|_| zbus::fdo::Error::Failed("daemon mutation lock poisoned".to_owned()))?;
         (|| {
             let profile = value
                 .parse::<PowerProfile>()
                 .map_err(|_| format!("unsupported power profile {value:?}"))?;
             profile::set_profile(profile)?;
-            self.handle_profile(profile, "SetPowerProfile", true)
+            self.handle_profile_unlocked(profile, "SetPowerProfile", true)
         })()
         .map_err(|error| zbus::fdo::Error::Failed(self.remember_error(error)))
     }
@@ -491,7 +554,7 @@ impl AorusControl {
                 control.apply_stored_curve(&curve)?;
             } else {
                 hardware
-                    .set_fan_mode(mode)
+                    .reselect_fan_mode(mode)
                     .map_err(|error| error.to_string())?;
             }
             control.clear_error();
@@ -501,7 +564,9 @@ impl AorusControl {
     }
 
     fn reapply_fan_profile(&self, #[zbus(header)] header: Header<'_>) -> zbus::fdo::Result<()> {
-        self.mutate(&header, |control| control.reapply_current("manual reapply"))
+        self.mutate(&header, |control| {
+            control.reapply_current_unlocked("manual reapply")
+        })
     }
 
     fn set_fan_curve(
@@ -572,14 +637,41 @@ impl AorusControl {
         })
     }
 
+    fn capture_fan_curve(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+    ) -> zbus::fdo::Result<Vec<(u8, u8)>> {
+        self.mutate(&header, |control| {
+            let curve = control.capture_current_curve()?;
+            eprintln!("aorusd: CaptureFanCurve stored 15 points without changing fan profile");
+            Ok(curve
+                .points()
+                .iter()
+                .map(|point| (point.temperature, point.raw_speed))
+                .collect())
+        })
+    }
+
     fn set_profile_mappings(
         &self,
         mappings: HashMap<String, u8>,
         #[zbus(header)] header: Header<'_>,
     ) -> zbus::fdo::Result<()> {
         self.mutate(&header, |control| {
-            control.set_mappings(mappings)?;
-            control.reapply_current("profile mapping update")?;
+            let previous = control.set_mappings(mappings)?;
+            if let Err(error) = control.reapply_current_unlocked("profile mapping update") {
+                let rollback = control
+                    .replace_config(previous)
+                    .and_then(|()| control.reapply_current_unlocked("profile mapping rollback"));
+                return Err(match rollback {
+                    Ok(()) => format!(
+                        "profile mapping update failed; prior mappings and profile were restored: {error}"
+                    ),
+                    Err(rollback_error) => format!(
+                        "profile mapping update failed ({error}); CRITICAL: prior mapping/profile restoration failed ({rollback_error})"
+                    ),
+                });
+            }
             control.clear_error();
             eprintln!("aorusd: SetProfileMappings saved mappings and reapplied the active profile");
             Ok(())
@@ -637,6 +729,14 @@ impl AorusControl {
             eprintln!("aorusd: SetGpuBoost applied and verified {boost}");
             Ok(())
         })
+    }
+
+    fn set_native_fn_keys_enabled(
+        &self,
+        enabled: bool,
+        #[zbus(header)] header: Header<'_>,
+    ) -> zbus::fdo::Result<()> {
+        self.mutate(&header, |_control| native_keys::set_enabled(enabled))
     }
 }
 

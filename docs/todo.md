@@ -1,10 +1,13 @@
 # AORUS Control implementation TODOs
 
+> Development and hardware-validation log. The repository README describes
+> the current supported installation.
+
 There are two phases. Phase 1 contains the entire application and every planned feature. Its workstreams are ordered by dependency but are not separate phases or partial releases. Phase 2 contains only the eventual persistent replacement of the Python service and the resulting soak.
 
 Check an item only when its acceptance note is true.
 
-Verification on 2026-08-26: 27 Rust tests pass; rustfmt, Clippy with warnings
+Verification on 2026-08-28: 69 Rust tests pass; rustfmt, Clippy with warnings
 denied, all-feature release build, shell syntax, XML parsing, desktop-file
 validation, systemd unit parsing, and staged install/uninstall pass through
 `tools/check.sh`. A private-D-Bus/fake-sysfs smoke test exercised strict-shadow
@@ -14,6 +17,14 @@ hardware. The native
 UI was launched unprivileged against that shadow daemon and visually checked.
 The live Python service remained enabled and active; no live sysfs or `/etc`
 writes were made.
+
+Follow-up verification on 2026-09-02: 72 Rust tests, Clippy with warnings
+denied, the all-feature release build, the production HID-BPF build and
+metadata checks, shell/XML/desktop/systemd validation, and staged
+install/uninstall all pass. The resident UI registered a native
+StatusNotifierItem and its single-instance Open behavior was exercised. Rust
+is now the machine's sole persistent fan-control writer; the Python service is
+installed for rollback but inactive and disabled.
 
 ## Phase 1 — complete application
 
@@ -109,6 +120,7 @@ Acceptance: Rust shadow logs predict the same desired actions as the Python serv
 
 - [x] Implement `aorusctl status` with temperatures, RPM, profiles, charge state, capabilities, and last error.
 - [x] Implement `aorusctl curve show` with all 15 exact raw points.
+- [x] Implement guarded `aorusctl curve capture` for the initial exclusive writer window without selecting Custom.
 - [x] Implement power-profile and firmware fan-profile selection.
 - [x] Implement `aorusctl fan reapply`.
 - [x] Implement a concise copyable `aorusctl diagnostics` report.
@@ -118,15 +130,118 @@ Acceptance: every hardware and profile action needed by the GUI can first be exe
 
 ### Workstream I — fix Fn brightness keys
 
-- [ ] Install/use `evtest` or `libinput debug-events` and capture both Fn brightness keys on likely keyboard, Video Bus, and GIGABYTE consumer-control devices.
-- [ ] Record standard key events, unknown scan codes, or absence of events in `docs/brightness-debug.md`.
-- [ ] If standard events arrive, repair the COSMIC/Pop!_OS shortcut or backlight authorization path.
-- [ ] If unknown scan codes arrive, add a DMI/device-specific udev hwdb mapping to `KEY_BRIGHTNESSDOWN` and `KEY_BRIGHTNESSUP`.
-- [ ] If no events arrive, trace ACPI/WMI notification delivery and prepare the smallest driver hotkey patch.
-- [ ] Verify ten presses in each direction, behavior at min/max, reboot persistence, and suspend/resume.
+- [x] Install/use `evtest` or `libinput debug-events` and capture both Fn brightness keys on likely keyboard, Video Bus, and GIGABYTE consumer-control devices.
+- [x] Record standard key events, unknown scan codes, or absence of events in `docs/brightness-debug.md`.
+- [ ] Repair or upstream COSMIC's concurrent brightness-action race, which can collapse a burst of native repeat events into one backlight step.
+- [x] Determine that a udev hwdb scan-code mapping is not applicable: the confirmed direction reports arrive on the raw HID interface and are translated by the narrowly gated HID-BPF path.
+- [x] Trace raw HID delivery and identify the direction-specific reports: `04 00 00 7d` down and `04 00 00 7e` up on GIGABYTE `1044:7a3a` interface 2.
+- [x] Remove the unsafe product-wide HID driver after confirming it can make `hid-generic` release every interface of the composite internal keyboard.
+- [x] Implement the native HID-BPF path, narrowly gated by this laptop's DMI identity, USB interface 2, and exact report descriptor.
+- [x] Translate only the confirmed report ID `0x04` payloads into reserved native
+  identity keys while unrelated reports remain unchanged; bind the post-XKB
+  `XF86Tools`/`XF86Launch5` keysyms to COSMIC brightness actions so both
+  physical buttons remain user-remappable.
+- [x] Translate each exact firmware press report through relative HID semantics so Linux emits a native press/release pulse; do not infer a release timeout or run a userspace repeat loop.
+- [x] Add a fail-safe load/test harness with an independent systemd recovery timer that verifies all composite interfaces remain on `hid-generic` and restores any unbound interface.
+- [x] Pass the guarded live tap/hold test with 10 down and 13 up evdev events while every composite interface remains on `hid-generic`.
+- [x] Validate the persistent brightness identities and correct the COSMIC
+  bindings from pre-XKB `F13`/`F14` names to the standard `inet(evdev)`
+  `XF86Tools`/`XF86Launch5` keysyms.
+- [ ] Verify ten presses in each direction, native hold/repeat, behavior at min/max, reboot persistence, and suspend/resume. Do not mark this complete from static inspection alone.
 - [x] Keep brightness independent of the app; the standard desktop/backlight path should own brightness, so no app-specific slider is planned.
 
 Acceptance: both keys adjust `/sys/class/backlight/intel_backlight` reliably while the AORUS app is closed.
+
+### Workstream I.1 — ambient light and automatic brightness
+
+- [x] Identify WMI `f7` buffers as 24-bit little-endian ambient-light samples rather than hotkey codes.
+- [x] Check the live system for standard support: no IIO light device or `iio-sensor-proxy` is installed, and this COSMIC settings daemon has no ambient-light API.
+- [x] Add a DMI-gated WMI driver that validates the ACPI buffer and exposes `IIO_LIGHT` / processed illuminance.
+- [ ] Validate lux changes, range, event delivery, unload/reload, suspend/resume, and coexistence with `aorus_laptop`.
+- [ ] Install and verify `iio-sensor-proxy` sees the device without giving it any brightness-writing responsibility.
+- [x] If COSMIC still has no ambient-light consumer, add an opt-in unprivileged session policy with hysteresis, minimum brightness, settling, and manual-override pause.
+- [x] Add ambient lux and auto-brightness state to the native UI, capability-gated until the standard sensor path is available.
+
+Acceptance: ambient lux is available through standard IIO, and opt-in automatic brightness works without a raw-input listener or a brightness loop in root `aorusd`.
+
+### Workstream I.2 — map hotkeys to actions
+
+- [x] Add a native Hotkeys screen with keyboard-accessible capture, clear, and restore-default controls.
+- [x] Offer only built-in AORUS profile/reapply, app-launch, and standard desktop actions; do not accept arbitrary user commands.
+- [x] Read and update only app-owned entries in COSMIC's user shortcut configuration while preserving every existing shortcut.
+- [x] Detect duplicate/conflicting combinations before saving and verify configuration readback.
+- [x] Keep hotkeys active while the app is closed without reading input devices from `aorusd` or adding another privileged key listener.
+- [ ] Capability-gate the feature on unsupported desktops and test persistence across app restart, logout/login, reboot, and suspend/resume.
+
+Acceptance: the user can assign, change, clear, and restore global mappings in
+the native app; mappings persist and work with the app closed without granting
+the GUI or daemon raw-input access.
+
+### Workstream I.3 — map every physical Fn button to an action
+
+- [x] Define the managed physical button inventory: brightness down/up, fan,
+  sleep/Zz, Wi-Fi, display/LCD, Square-X, touchpad lock, and AI. Leave the
+  already-native airplane and volume buttons entirely to Linux.
+- [x] Separate the physical-button-to-action model from the existing
+  action-to-global-key-combination model in the design.
+- [x] Generalize the raw HID/evdev capture tool to collect a tap and hold for
+  one named button at a time, including interface, exact bytes, cadence, and
+  before/after system state.
+- [x] Capture fan, sleep, Wi-Fi, display, Square-X, touchpad lock, airplane,
+  and AI individually; do not infer codes from icons or WMI ambient-light data.
+- [x] Confirm airplane mode already works as HID Wireless Radio Control;
+  remove it from managed mappings and leave report `07 01` untouched while
+  retaining airplane-toggle as an assignable action.
+- [ ] Live-test the seven translated interface-2 identities plus the native
+  Display and touchpad-lock chords, and prove COSMIC dispatch, conflict
+  detection, and app-closed use.
+- [x] Extend the descriptor/event fixup only for capture-proven reports while
+  preserving all unrelated reports and every `hid-generic` binding.
+- [ ] Prove tap/hold/release semantics per button. Repeating reports without a
+  release may drive only actions that are safe to repeat.
+- [x] Add typed `PhysicalFnButton` and `FnAction` models with stable IDs,
+  compiled defaults, capability gating, and no arbitrary command, report-byte,
+  keycode, or fixed-speed representation.
+- [x] Confirm native backends for suspend, Wi-Fi, display, touchpad, airplane,
+  screenshot, volume, and media actions before exposing each one.
+- [x] Add typed cycle-power-profile support so the default Fan button changes
+  System76 power policy and lets the authoritative service select the mapped
+  firmware fan profile.
+- [x] Persist versioned per-user choices atomically in
+  `$XDG_CONFIG_HOME/aorus-control/fn-buttons.toml` and derive only narrowly
+  AORUS-owned COSMIC shortcut entries with readback and rollback.
+- [x] Add a responsive **Laptop Fn buttons** UI section with one action combo
+  per button, detection/capability status, immediately persisted Reset/Reset
+  all actions, and conflict errors; keep conventional shortcuts separate.
+- [x] Add `aorusctl fn list|get|set|reset` using the same typed allowlist and no
+  shell-command field.
+- [x] Migrate brightness from its current semantic event to a remappable
+  identity only in one guarded transaction that installs defaults first,
+  prevents duplicate brightness actions, and restores the current object on
+  failure.
+- [ ] Validate every default and override with the app closed, then across
+  logout/login, reboot, and suspend/resume; confirm Rust remains the only fan
+  writer and all composite interfaces remain on `hid-generic`.
+
+Acceptance: every capture-proven Fn button has a visible safe default and can
+be changed, disabled, or reset from the native UI; mappings work while the app
+is closed; unsupported buttons/actions explain why; no raw-input listener,
+uinput wrapper, arbitrary command, fixed fan speed, or competing fan writer is
+introduced.
+
+### Workstream I.4 — resident desktop lifecycle
+
+- [x] Add a native StatusNotifierItem with Open and Quit actions.
+- [x] Hide the window instead of exiting when its close button is used.
+- [x] Keep one resident UI instance and make later launches open that instance.
+- [x] Install an XDG autostart entry that launches hidden at desktop login.
+- [ ] Validate status-area recovery and autostart across logout/login and
+  reboot on the installed build.
+
+Acceptance: closing the window keeps AORUS Control available in the status
+area, explicit Quit removes the resident UI, and the UI returns hidden on the
+next desktop login. The system daemon remains independent so fan/profile
+safety never depends on the UI process.
 
 ### Workstream J — build the native dashboard
 
@@ -169,7 +284,7 @@ Acceptance: controls are capability-gated and every write has readback, a visibl
 
 ### Workstream M — prove replacement readiness without cutting over
 
-- [ ] Run `aorusd` in read-only/shadow mode while Python remains the sole fan-mode writer.
+- [x] Run `aorusd` in read-only/shadow mode while Python remains the sole fan-mode writer.
 - [ ] Compare intended Rust actions against Python journal actions during normal use.
 - [x] Add an explicit migration command/script that detects and stops/disables `aorus-power-profile-sync.service` before enabling Rust write ownership.
 - [x] Refuse or prominently fail installation if both services would become writers.
@@ -193,16 +308,19 @@ Acceptance: the complete Rust application passes shadow and exclusive hardware t
 - [x] Add license and attribution for the existing AORUS driver behavior being integrated.
 - [x] Document supported hardware as this tested model first; call other models experimental until proven.
 - [x] Publish known limitations, recovery instructions, and diagnostic-report steps.
-- [ ] Produce a Phase 1 release candidate only after every Phase 1 workstream and blocker in `PLAN.md` is cleared.
+- [ ] Produce a release candidate only after every workstream and blocker in
+  [development-plan.md](development-plan.md) is cleared.
 
 Acceptance: the complete application can be installed, upgraded, tested, and uninstalled without replacing Python, creating competing writers, or erasing user configuration.
 
 ## Deferred Phase 2 — persistently replace the Python service
 
-Do not begin this phase until all Phase 1 workstreams pass. This phase changes deployment ownership; it does not add app features.
+The user explicitly started this deployment transition after the initial
+hardware tests. It changes ownership only; the remaining work is validation
+and soak, not additional app features.
 
-- [ ] Run the explicit migration operation: stop and disable `aorus-power-profile-sync.service`, then enable persistent Rust write ownership and `aorusd.service`.
-- [ ] Verify immediately that `aorusd` is the only fan-control writer.
+- [x] Run the explicit migration operation: stop and disable `aorus-power-profile-sync.service`, then enable persistent Rust write ownership and `aorusd.service`.
+- [x] Verify immediately that `aorusd` is the only fan-control writer.
 - [ ] Test repeated profile changes, AC transitions, reboot, and at least ten suspend/resume cycles after cutover.
 - [ ] Re-run monitored CPU/GPU load and curve apply/readback/rollback checks in the deployed configuration.
 - [ ] Soak for multiple days and review restarts, errors, profile drift, memory, and idle CPU.

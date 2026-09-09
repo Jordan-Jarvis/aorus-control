@@ -1,5 +1,8 @@
 # AORUS Control for Linux — implementation plan
 
+> Historical design record. See [todo.md](todo.md) for validation status and
+> the repository README for current installation instructions.
+
 ## Goal
 
 Build a small native Rust application for this GIGABYTE AERO 16 YE5 that provides the useful parts of AORUS Control Center on Pop!_OS:
@@ -11,7 +14,14 @@ Build a small native Rust application for this GIGABYTE AERO 16 YE5 that provide
 - a 15-point custom fan-curve graph with draggable points;
 - charging and supported GPU controls;
 - diagnostics that make driver or profile-sync failures visible;
-- working Fn + brightness-down/up keys.
+- user-configurable hotkey mappings backed by the desktop's global shortcut system;
+- working native Fn buttons, with safe defaults and user-selectable actions for
+  brightness down/up, fan, sleep, Wi-Fi, display, Square-X, touchpad lock, and
+  AI; the already-native airplane and volume buttons remain Linux-owned;
+- ambient-light telemetry through Linux IIO, with an opt-in automatic
+  brightness policy where the desktop does not provide one;
+- a resident status-area icon with close-to-hide, Open, Quit, and hidden login
+  startup behavior.
 
 The application will not set a fixed fan speed during normal operation. Normal, Silent, Gaming, and Custom are firmware profiles. Fixed and Auto modes stay out of the main UI because they rely on `fan_custom_speed` rather than a temperature curve.
 
@@ -74,7 +84,16 @@ The complete Phase 1 application includes:
 5. Charge mode/limit, battery cycles, and proven GPU-boost choices.
 6. A root daemon that owns all Rust-app hardware writes and contains the finished replacement logic, while the Python profile-sync service remains the installed authority until Phase 2.
 7. A small CLI for diagnostics, scripted testing, and recovery when the GUI is unavailable.
-8. A machine-specific brightness-key fix at the lowest layer that receives the key event.
+8. A machine-specific Fn-button fix at the lowest layer that receives each
+   proven key event, beginning with the already working brightness pair.
+9. A native Hotkeys screen with separate editors for physical laptop Fn
+   buttons and conventional global key combinations. Both use a typed action
+   allowlist and COSMIC's global shortcut configuration.
+10. A standard IIO ambient-light source from the laptop's WMI sensor and an
+    opt-in user-session auto-brightness policy if COSMIC still lacks one.
+11. A single resident desktop process that starts hidden at login, keeps a
+    native status-area item, hides instead of exiting when its window closes,
+    and provides explicit Open and Quit actions.
 
 ### Deferred until there is a demonstrated need
 
@@ -105,8 +124,9 @@ aorus-control/
 │   ├── aorusd.service
 │   ├── io.github.aoruslinux.Control1.conf
 │   └── io.github.aoruslinux.control.policy
-├── PLAN.md
-└── TODO.md
+└── docs/
+    ├── development-plan.md
+    └── todo.md
 ```
 
 Modules should be split into additional files only when their size makes that clearer. Separate crates can be introduced later if independent release cycles or dependency boundaries become a real problem.
@@ -115,7 +135,7 @@ Modules should be split into additional files only when their size makes that cl
 
 Use `eframe/egui` plus `egui_plot`. It creates a normal native Linux window and gives direct support for custom plotting and draggable controls without HTML, JavaScript, a browser runtime, or a local web server. Keep both UI dependencies behind an optional Cargo `ui` feature so daemon/CLI-only builds do not compile the graphics stack.
 
-The UI always runs as the logged-in user. It never runs under `sudo` and never writes sysfs directly.
+The UI always runs as the logged-in user. It never runs under `sudo` and never writes sysfs directly. An XDG autostart entry launches it hidden at login. A native StatusNotifierItem reopens the window or quits the resident UI, and a per-user Unix socket keeps launches single-instance.
 
 ### Privileged daemon
 
@@ -140,6 +160,7 @@ No thermal control loop belongs in the daemon. Firmware remains responsible for 
 ```text
 aorusctl status
 aorusctl curve show
+aorusctl curve capture
 aorusctl profile performance|balanced|battery
 aorusctl fan normal|silent|gaming|custom
 aorusctl fan reapply
@@ -162,6 +183,7 @@ Initial methods:
 | --- | --- | --- |
 | `GetStatus() -> a{sv}` | temperatures, RPM, profiles, charge state, capabilities and last error | none |
 | `GetFanCurve() -> a(yy)` | return the 15 `(temperature, raw_speed)` points | none |
+| `CaptureFanCurve() -> a(yy)` | validate and store the current firmware curve without changing the active fan profile | polkit |
 | `SetPowerProfile(s)` | call System76 Battery/Balanced/Performance method | polkit |
 | `SetFanMode(y)` | select an allowed firmware profile | polkit |
 | `ReapplyFanProfile()` | safely reselect the mapped profile | polkit |
@@ -256,14 +278,231 @@ Fn brightness handling should work independently of whether the AORUS UI is open
 1. Capture key presses with `evtest` or `libinput debug-events` on the internal keyboard, Video Bus devices, and GIGABYTE HID consumer-control device.
 2. If `KEY_BRIGHTNESSDOWN`/`KEY_BRIGHTNESSUP` already arrive, fix the Pop!_OS/COSMIC shortcut or backlight authorization path.
 3. If Linux receives unknown scan codes, add a machine-specific udev hwdb mapping to standard brightness key codes.
-4. If no input event arrives, trace ACPI/WMI events and add the smallest required hotkey support to the kernel driver.
-5. Verify both keys across reboot and suspend/resume, including behavior at brightness limits.
+4. If no standard input event arrives, add the smallest native kernel HID/input support that does not replace or unbind the physical keyboard driver.
+5. Verify both keys across reboot and suspend/resume, including native hold/repeat behavior and brightness limits.
 
-The app may later expose a brightness slider through the standard backlight/logind interface, but a global key listener inside `aorusd` is a fallback, not the default design.
+The confirmed source is USB HID `1044:7a3a`, interface 2. Its vendor report
+`04 00 00 7d` means brightness down and `04 00 00 7e` means brightness up on
+this DMI-matched laptop. A product-wide HID special driver cannot safely claim
+only interface 2: its ID makes `hid-generic` relinquish all four interfaces
+before a probe callback can reject the other three. The discarded test
+disabled the internal keyboard and was removed. The safe intended fix is a
+native kernel HID/input integration, preferably HID-BPF or an equivalent
+narrowly scoped kernel path, that keeps `hid-generic` attached to the
+composite device. It must gate attachment by the target DMI identity, USB
+interface 2, and the expected report-descriptor shape (including report ID
+`0x04`), then translate only the exact captured reports into normal
+`KEY_BRIGHTNESSDOWN` and `KEY_BRIGHTNESSUP` events.
+
+The implementation must not match the product-wide USB ID and reject sibling
+interfaces in `probe`: that ordering already caused the keyboard failure. It
+must preserve unrelated reports and remain inactive when the DMI or descriptor
+does not match. The standard HID/input stack must own the resulting evdev
+device; no hidraw-to-uinput userspace re-emitter is part of the design.
+
+The raw capture proves one report per brightness press and no release report.
+The HID-BPF descriptor therefore adds relative Consumer brightness fields and
+translates each exact vendor report to one native HID press/release pulse,
+without an invented timeout or userspace repeat loop. Hold behavior and repeat
+cadence must be tested without claiming success before live validation.
+
+The app may later expose a brightness slider through the standard
+backlight/logind interface. Brightness keys must remain independent of the
+app and must work while it is closed.
+
+## Ambient-light and automatic-brightness workstream
+
+The WMI `f7` notifications are ambient-light samples, not hotkeys. Expose the
+24-bit little-endian lux value as a standard IIO illuminance channel using a
+DMI-gated kernel driver. This keeps sensor acquisition in the kernel interface
+expected by `iio-sensor-proxy` and other desktop components.
+
+The installed COSMIC settings daemon currently has manual brightness methods
+but no ambient-light/SensorProxy consumer. If that remains true after the IIO
+device is validated, add the smallest opt-in user-session policy. It must use
+hysteresis and settling delays, pause after manual brightness changes, clamp to
+a user-configurable minimum, and call the desktop's normal brightness API. It
+must not run in root `aorusd`, write a fixed brightness continuously, or hide
+the standard IIO sensor behind an application-only API.
+
+## Hotkey mapping
+
+Hotkeys configured in the app must continue working after its window closes.
+On this COSMIC system, the UI should manage narrowly identified entries in the
+user's native `com.system76.CosmicSettings.Shortcuts` configuration instead of
+opening `/dev/input`, adding a second key-grabber, or running commands from the
+root daemon. Existing non-AORUS custom shortcuts must be preserved semantically.
+
+The first supported actions are opening AORUS Control, selecting Battery,
+Balanced, or Performance, selecting/reapplying a firmware fan profile, and
+the desktop's standard brightness/volume/media actions. Arbitrary shell
+commands are out of scope because a fixed action list covers the requested
+control-center behavior without creating a command-execution interface.
+
+The Hotkeys screen must capture one combination at a time, detect conflicts,
+allow clearing/restoring defaults, show when the current desktop backend is
+unsupported, and verify that the compositor accepted each change. The native
+kernel brightness path must emit ordinary brightness key events independently
+of the application and its global shortcut configuration.
+
+## Physical Fn-button remapping
+
+Physical laptop buttons and conventional global shortcuts are different
+models. A conventional shortcut maps an action to a user-entered key
+combination. An Fn mapping maps one fixed physical button identity to one
+allowlisted action. They may share the action catalogue and COSMIC serializer,
+but they must not share persistence records or UI rows.
+
+The stable physical IDs are:
+
+```text
+brightness-down  brightness-up  fan  sleep  wifi  display
+square-x  touchpad-lock  ai
+```
+
+The 2026-08-28 read-only capture identified these reports:
+
+| Physical button | Confirmed report | Status |
+| --- | --- | --- |
+| Brightness down | interface 2: `04 00 00 7d` | production F13 identity; persistent evdev and COSMIC action validated 2026-09-02 |
+| Brightness up | interface 2: `04 00 00 7e` | production F14 identity; persistent evdev and COSMIC action validated 2026-09-02 |
+| Fan | interface 2: `04 00 00 84` | production F15 identity; live validation pending |
+| Sleep / Zz | interface 2: `02 02` press, `02 00` release | production F16 identity; live validation pending |
+| Wi-Fi | interface 2: `04 00 00 7c` | production F17 identity; live validation pending |
+| Display / LCD | interface 0: Right-Super+P keyboard sequence | native chord used directly |
+| Square-X | interface 2: `04 00 00 80` | production F19 identity; live validation pending |
+| Touchpad lock | interface 2: `04 00 00 81` plus interface-0 sequence | native Super+Ctrl+F24 chord used; interface-2 report ignored |
+| AI | interface 2: `04 00 00 88` | production F22 identity; live validation pending |
+
+Airplane mode emits HID Wireless Radio Control report `07 01` and already
+works through Linux. It is intentionally not a managed physical button, has
+no AORUS-owned F21 shortcut, and remains untouched like the working volume
+keys. Airplane toggle remains an assignable action for managed buttons.
+
+The WMI `f7......` buffers are ambient-light samples and must not be reused as
+hotkey codes. Event-device numbers are also unstable and must not be stored.
+
+### Native input path
+
+The target path is:
+
+```text
+firmware vendor report
+  -> DMI/interface/descriptor-gated HID-BPF translation
+  -> hid-generic
+  -> distinct standard evdev identity key
+  -> COSMIC global shortcut dispatcher
+  -> selected typed action
+```
+
+This remains native Linux input: there is no root hidraw listener, uinput
+device, application key grabber, userspace repeat loop, or command wrapper.
+Every composite interface stays attached to `hid-generic`, unrelated reports
+pass through byte-for-byte, and persistent loading retains the existing
+automatic recovery guard.
+
+The production HID-BPF object maps the seven interface-2 reports to
+modifierless F13, F14, F15, F16, F17, F19, and F22 identities. Display and
+touchpad lock retain their already-distinct native interface-0 chords. The
+identity range is an implementation detail and is never user-editable.
+
+Enabling native Fn support first installs and reads back the default or saved
+COSMIC mappings, then attaches and verifies the production HID-BPF object.
+Failure removes the enable marker, detaches the object, and restores the exact
+original descriptor. Upgrading a prior brightness-only object is handled as a
+guarded in-place migration; one report never emits both its old semantic event
+and its new identity.
+
+### Capture and event semantics
+
+Add one generalized read-only capture that prompts for a tap and a two-second
+hold for each button and records the exact HID interface, report length and
+bytes, evdev/libinput events, repeat cadence, and relevant before/after state.
+Capture sleep under a logind sleep inhibitor. Query WMI/ACPI only when HID and
+evdev are silent. After every guarded translation test, verify that all four
+composite interfaces remain on `hid-generic`.
+
+- A proven press/release pair uses ordinary down/up semantics.
+- A proven single report is tap-only.
+- Repeated reports without a release may use relative native pulses only for
+  actions safe to repeat, such as brightness or volume.
+- Suspend, profile cycling, radio/display/touchpad toggles, and app launch stay
+  unavailable for a repeating report until safe edge semantics are proven.
+- Never infer a key solely from its printed icon, invent a release timeout, or
+  hard-code an unobserved report.
+
+### Action catalogue and defaults
+
+The UI offers a typed enum, grouped as System, Power/Fans, Media, and
+Application. Initial candidates are Disabled; brightness down/up; Battery,
+Balanced, Performance, and cycle power profile; Normal, Silent, Gaming,
+Custom, and reapply fan profile; suspend; Wi-Fi, display, touchpad, and
+airplane toggles; screenshot; volume down/up/mute; play/pause; and open AORUS
+Control. An action is selectable only after its COSMIC or typed `aorusctl`/D-Bus
+backend is proven. Arbitrary commands, arbitrary report bytes/keycodes, and
+fixed fan speed are never options.
+
+Proposed defaults, to be verified during capture, are:
+
+| Button | Default action |
+| --- | --- |
+| Brightness down/up | System brightness down/up |
+| Fan | Cycle System76 power profile and therefore its mapped firmware fan profile |
+| Sleep / Zz | Suspend |
+| Wi-Fi | Wi-Fi toggle |
+| Display / LCD | Display toggle |
+| Square-X | Open AORUS Control |
+| Touchpad lock | Touchpad toggle |
+| AI | Open AORUS Control until a native Linux AI action exists |
+
+Cycling the System76 profile follows the configured firmware mapping regardless
+of which profile-sync service is authoritative. Direct fan-profile choices use
+the Rust daemon's write-enabled API and always select firmware profiles, never
+a fixed speed.
+
+### Persistence, conflicts, UI, and recovery
+
+Store the button-to-action choices in a versioned user-owned
+`$XDG_CONFIG_HOME/aorus-control/fn-buttons.toml`, written atomically with mode
+`0600`. Compiled defaults fill missing entries in memory; explicit Reset one
+and Reset all actions apply the current defaults without overwriting existing
+choices during upgrades. Unknown schema versions fail closed without changing
+the file.
+
+COSMIC entries are derived, AORUS-owned records named by physical button, for
+example `AORUS Control: fn-button:fan`. Saving validates the complete proposed
+set, checks COSMIC default/custom conflicts, preserves unrelated shortcuts,
+writes and reads back the COSMIC configuration, and only then commits the
+user mapping file. Failure restores the previous AORUS-owned entries. Multiple
+buttons may intentionally choose one action, but two physical identities may
+not claim one trigger key. External edits to an AORUS-owned entry require an
+explicit reload rather than silent overwrite.
+
+The Hotkeys page has two sections. **Laptop Fn buttons** shows one responsive
+row/card per physical button with detection state, native trigger evidence,
+Action combo box, default, capability reason, immediately saved Reset, and
+Reset all. Selector changes save immediately so controls cannot be separated
+from an off-screen Apply button. **Global keyboard shortcuts** retains the existing combination editor.
+At narrow widths, controls stack rather than forming a wide matrix. Disabled
+and Not captured are explicit states, not silent fallbacks.
+
+The UI is only the editor. Mappings work with the window closed because COSMIC
+dispatches standard evdev triggers to system actions or fixed typed
+`aorusctl` commands. Add matching recovery commands:
+
+```text
+aorusctl fn list
+aorusctl fn get BUTTON
+aorusctl fn set BUTTON ACTION
+aorusctl fn reset [BUTTON|all]
+```
+
+These commands run as the desktop user and never accept shell text. The root
+daemon does not own per-user shortcut configuration.
 
 ## Configuration
 
-Store daemon-managed configuration in `/etc/aorus-control.toml`, owned by root and written atomically. The initial schema is deliberately small:
+Store daemon-managed configuration in `/etc/aorus-control/config.toml`, owned by root and written atomically. The initial schema is deliberately small:
 
 ```toml
 version = 1

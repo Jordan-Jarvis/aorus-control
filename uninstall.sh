@@ -24,21 +24,42 @@ if [[ -z $destdir ]] && systemctl cat aorusd.service >/dev/null 2>&1; then
   systemctl daemon-reload
 fi
 
+if [[ -z $destdir && -x /usr/local/libexec/aorus-brightness-hid-bpf ]]; then
+  for device in /sys/bus/hid/devices/0003:1044:7A3A.*; do
+    [[ -e $device ]] || continue
+    [[ $(cat "$device/../bInterfaceNumber" 2>/dev/null || true) == 02 ]] || continue
+    /usr/local/libexec/aorus-brightness-hid-bpf remove "$device" || true
+  done
+fi
+
 rm -f \
   "$destdir/usr/local/bin/aorusctl" \
   "$destdir/usr/local/bin/aorus-control" \
   "$destdir/usr/local/libexec/aorusd" \
+  "$destdir/usr/local/libexec/aorus-auto-brightness" \
   "$destdir/usr/local/libexec/aorus-control-migrate-to-rust" \
   "$destdir/usr/local/libexec/aorus-control-rollback-to-python" \
   "$destdir/usr/local/libexec/aorus-control-exclusive-hardware-test" \
+  "$destdir/usr/local/libexec/aorus-control-fn-identity-test" \
+  "$destdir/usr/local/libexec/aorus-control-fn-buttons-capture" \
+  "$destdir/usr/local/libexec/aorus-brightness-hid-bpf" \
+  "$destdir/usr/local/libexec/aorus-udev-hid-bpf" \
+  "$destdir/usr/local/lib/aorus-control/0010-Gigabyte__AERO-16-YE5.bpf.o" \
+  "$destdir/usr/local/lib/aorus-control/0010-Gigabyte__AERO-16-YE5-fn-identity-prototype.bpf.o" \
+  "$destdir/etc/aorus-control/brightness-hid-bpf.enabled" \
   "$destdir/usr/lib/systemd/system/aorusd.service" \
+  "$destdir/usr/lib/systemd/user/aorus-auto-brightness.service" \
+  "$destdir/usr/lib/udev/rules.d/70-aorus-brightness-hid-bpf.rules" \
+  "$destdir/usr/share/doc/aorus-control/auto-brightness.toml" \
   "$destdir/usr/share/dbus-1/system.d/io.github.aoruslinux.Control1.conf" \
   "$destdir/usr/share/polkit-1/actions/io.github.aoruslinux.control.policy" \
   "$destdir/usr/share/applications/io.github.aoruslinux.Control.desktop" \
+  "$destdir/etc/xdg/autostart/io.github.aoruslinux.Control.desktop" \
   "$destdir/usr/share/icons/hicolor/scalable/apps/io.github.aoruslinux.Control.svg"
 
 if [[ -z $destdir ]]; then
   systemctl daemon-reload
+  udevadm control --reload-rules
 fi
 if [[ -z $destdir ]] && command -v busctl >/dev/null 2>&1; then
   busctl call --system org.freedesktop.DBus /org/freedesktop/DBus \

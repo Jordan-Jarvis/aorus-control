@@ -78,8 +78,11 @@ restore() {
     fi
     /usr/local/libexec/aorus-power-profile-sync force >/dev/null 2>&1 || true
 
-    if ! systemctl is-active --quiet "$PYTHON_UNIT"; then
-        printf 'CRITICAL: Python fan-profile service was not restored; select Gaming and inspect systemctl/journalctl immediately.\n' >&2
+    if ! systemctl is-active --quiet "$PYTHON_UNIT" \
+        || ! systemctl is-enabled --quiet "$PYTHON_UNIT" \
+        || systemctl is-active --quiet "$TRANSIENT_UNIT" \
+        || ! /usr/local/bin/aorusctl status 2>/dev/null | grep -qx 'daemon_mode=shadow'; then
+        printf 'CRITICAL: exclusive writer recovery did not restore Python + Rust shadow mode; select Gaming and inspect systemctl/journalctl immediately.\n' >&2
         exit 1
     fi
     printf 'Exclusive window closed: Python is active again; persistent Rust ownership was not enabled.\n'

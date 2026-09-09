@@ -1,3 +1,16 @@
 /target/
+brightness/*.ko
+brightness/*.mod
+brightness/*.mod.c
+brightness/*.o
+brightness/Module.symvers
+brightness/modules.order
+brightness/.*.cmd
+brightness/als/*.ko
+brightness/als/*.mod
+brightness/als/*.mod.c
+brightness/als/*.o
+brightness/als/Module.symvers
+brightness/als/modules.order
+brightness/als/.*.cmd
 *.swp
-

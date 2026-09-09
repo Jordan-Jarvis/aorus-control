@@ -1,0 +1,19 @@
+# Optional per-user configuration. Copy to:
+# ~/.config/aorus-control/auto-brightness.toml
+# The user service is opt-in and remains disabled until enabled from AORUS
+# Control or with: systemctl --user enable --now aorus-auto-brightness.service
+
+# Sensor range mapped logarithmically to the display range below.
+min_lux = 1.0
+max_lux = 1000.0
+# Automatic brightness never goes below this fraction of the display range.
+min_brightness = 0.10
+max_brightness = 1.0
+# Ignore target changes smaller than this fraction of the display range.
+hysteresis = 0.03
+# Require a stable target before changing the display.
+settle_seconds = 3
+# Pause automatic writes after a manual desktop brightness change.
+override_seconds = 300
+# Polling is deliberately slow: IIO is the input and COSMIC owns brightness.
+poll_seconds = 2

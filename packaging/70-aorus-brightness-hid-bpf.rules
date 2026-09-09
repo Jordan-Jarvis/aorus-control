@@ -1,0 +1,11 @@
+ACTION!="add|remove", GOTO="aorus_brightness_end"
+SUBSYSTEM!="hid", GOTO="aorus_brightness_end"
+ENV{HID_ID}!="0003:00001044:00007A3A", GOTO="aorus_brightness_end"
+ATTRS{idVendor}!="1044", GOTO="aorus_brightness_end"
+ATTRS{idProduct}!="7a3a", GOTO="aorus_brightness_end"
+ATTRS{bInterfaceNumber}!="02", GOTO="aorus_brightness_end"
+
+ACTION=="add", RUN{program}+="/usr/local/libexec/aorus-brightness-hid-bpf add $sys$devpath"
+ACTION=="remove", RUN{program}+="/usr/local/libexec/aorus-brightness-hid-bpf remove $sys$devpath"
+
+LABEL="aorus_brightness_end"

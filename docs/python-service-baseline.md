@@ -42,7 +42,7 @@ a294021cfee6970a3a1dde594b000a7573e752d2d6df5bf716b6a1a68d28861d  /usr/local/lib
 e7cfddc4c15cd0800c21d5d139ab51f28059b873e9351450e327589ee006b8ee  /etc/aorus-power-profile-sync.conf
 ```
 
-Editable source copies remain in `/home/jordan/src/aorus-power-profile-sync/`.
+The editable source copy is maintained separately from this repository.
 Exact installed-file copies plus status and recent journal output are preserved
 under `baseline/python-service/` in this repository.
 The installed service logs `Scheduled fan profile watchdog every 60s` and

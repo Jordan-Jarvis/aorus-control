@@ -9,7 +9,7 @@ Build and install the Phase 1 application in shadow mode first. Then open a
 window with:
 
 ```sh
-cd /home/jordan/src/aorus-control
+cd /path/to/aorus-control
 sudo ./tools/exclusive-hardware-test.sh --confirm-exclusive
 ```
 
