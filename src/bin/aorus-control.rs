@@ -595,7 +595,7 @@ impl AorusApp {
             (
                 BLUE,
                 "Shadow mode",
-                "Monitoring only; Python remains authoritative".to_owned(),
+                "Monitoring only; hardware changes are disabled".to_owned(),
             )
         }
     }
@@ -683,7 +683,7 @@ impl AorusApp {
                     banner(
                         ui,
                         AMBER,
-                        "Shadow mode: telemetry and System76 power-profile requests are available. AORUS fan, curve, charging, and GPU writes are disabled; the Python service remains authoritative.",
+                        "Shadow mode: telemetry and System76 power-profile requests are available. AORUS fan, curve, charging, and GPU writes are disabled.",
                     );
                     ui.add_space(12.0);
                 }
@@ -2246,7 +2246,7 @@ impl AorusApp {
         if self.action_in_flight.is_some() {
             "A hardware action is already in progress."
         } else if self.status.as_ref().and_then(|s| s.daemon_mode.as_deref()) == Some("shadow") {
-            "Controls are disabled in shadow mode; the Python service remains authoritative."
+            "Controls are disabled in read-only shadow mode."
         } else {
             "Controls require a connected write-enabled daemon."
         }

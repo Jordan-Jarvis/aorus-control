@@ -184,8 +184,8 @@ fn fn_action_ron(action: FnAction) -> Option<&'static str> {
         FnAction::PowerPerformance => {
             Some("Spawn(\"/usr/local/bin/aorusctl profile performance\")")
         }
-        // Cycling the desktop power profile lets the authoritative service
-        // select the corresponding mapped firmware profile.
+        // Cycling the desktop power profile lets aorusd select the
+        // corresponding mapped firmware profile.
         FnAction::CyclePowerProfile => Some("Spawn(\"/usr/local/bin/aorusctl profile cycle\")"),
         FnAction::FanNormal => Some("Spawn(\"/usr/local/bin/aorusctl fan normal\")"),
         FnAction::FanSilent => Some("Spawn(\"/usr/local/bin/aorusctl fan silent\")"),

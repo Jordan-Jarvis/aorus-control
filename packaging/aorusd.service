@@ -19,7 +19,7 @@ UMask=0077
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=full
-# The only persistent write path needed by explicit write-mode migration.
+# Persistent application configuration.
 ReadWritePaths=/etc/aorus-control
 RestrictAddressFamilies=AF_UNIX
 NoNewPrivileges=true

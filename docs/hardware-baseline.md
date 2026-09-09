@@ -95,7 +95,7 @@ coretemp temp1_input (Package id 0)=83000
 NVIDIA GeForce RTX 3080 Ti Laptop GPU=66°C, 0% utilization, 13.80 W
 ```
 
-## Power, backlight, and existing writer
+## Power and backlight
 
 ```text
 Power Profile: Performance
@@ -108,15 +108,9 @@ brightness=4
 max_brightness=400
 type=raw
 bl_power=0
-
-aorus-power-profile-sync.service: enabled
-aorus-power-profile-sync.service: active
 ```
 
-The System76 power profile is the authority for CPU/system power policy. The
-existing Python service maps Performance to Gaming, Balanced to Normal, and
-Battery to Silent. Rust packaging remains read-only until the explicit Phase 2
-cutover.
+The System76 power profile is the authority for CPU/system power policy.
 
 At collection time the Rust D-Bus name
 `io.github.aoruslinux.Control1` was not owned, so no Rust daemon status was
@@ -139,6 +133,4 @@ for d in /sys/class/hwmon/*; do
   cat "$d/fan1_input" "$d/fan2_input" 2>/dev/null
 done
 system76-power profile
-systemctl is-enabled aorus-power-profile-sync.service
-systemctl is-active aorus-power-profile-sync.service
 ```

@@ -58,4 +58,4 @@ perform that operation.
   should use `notify_new` only after preserving equivalent validation.
 
 The module has no installation, service, udev, or `iio-sensor-proxy` package
-changes. It is also independent of the existing Python fan-control service.
+changes. It is independent of fan and power-profile control.

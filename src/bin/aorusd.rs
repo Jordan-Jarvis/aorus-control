@@ -6,31 +6,26 @@ use zbus::blocking::connection::Builder;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let write_enabled = match arguments.as_slice() {
-        [] => false,
+        [] => true,
+        [argument] if argument == "--shadow" => false,
+        // Keep accepting the old explicit flag so upgrades cannot strand a
+        // machine with an existing systemd override.
         [argument] if argument == "--write-enabled" => true,
         [argument] if argument == "--help" || argument == "-h" => {
-            println!("Usage: aorusd [--write-enabled]");
-            println!("Default mode is shadow; Python remains the authoritative fan writer.");
+            println!("Usage: aorusd [--shadow]");
+            println!("Default mode is write-enabled; --shadow disables hardware mutations.");
             return Ok(());
         }
         _ => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "usage: aorusd [--write-enabled]",
-            )
-            .into());
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidInput, "usage: aorusd [--shadow]").into(),
+            );
         }
     };
-    if write_enabled && aorus_control::dbus::python_service_active().map_err(io::Error::other)? {
-        return Err(io::Error::other(
-            "refusing write-enabled startup while aorus-power-profile-sync.service is active",
-        )
-        .into());
-    }
 
     let control = AorusControl::new(write_enabled).map_err(io::Error::other)?;
     eprintln!(
-        "aorusd: starting in {} mode; Python service remains untouched",
+        "aorusd: starting in {} mode",
         if write_enabled {
             "write-enabled"
         } else {

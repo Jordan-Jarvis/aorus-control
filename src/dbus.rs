@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -146,12 +145,7 @@ impl AorusControl {
             .lock()
             .map_err(|_| "daemon state lock poisoned".to_owned())?;
         if state.mode == DaemonMode::Shadow {
-            Err("daemon is in shadow mode; Python remains authoritative".to_owned())
-        } else if python_service_active()? {
-            Err(
-                "refusing Rust hardware writes while aorus-power-profile-sync.service is active"
-                    .to_owned(),
-            )
+            Err("daemon is in read-only shadow mode".to_owned())
         } else {
             Ok(())
         }
@@ -332,7 +326,7 @@ impl AorusControl {
         header: &Header<'_>,
         operation: impl FnOnce(&Self) -> Result<T, String>,
     ) -> zbus::fdo::Result<T> {
-        // Gate before polkit so the safe default never prompts or touches hardware.
+        // Gate before polkit so explicit read-only mode never prompts or touches hardware.
         self.require_write_mode()
             .map_err(zbus::fdo::Error::Failed)?;
         authorize(header)?;
@@ -340,8 +334,7 @@ impl AorusControl {
             .mutations
             .lock()
             .map_err(|_| zbus::fdo::Error::Failed("daemon mutation lock poisoned".to_owned()))?;
-        // Recheck after a potentially interactive polkit round-trip. The
-        // write-mode service also Conflicts= with Python at the systemd layer.
+        // Recheck after a potentially interactive polkit round-trip.
         self.require_write_mode()
             .map_err(zbus::fdo::Error::Failed)?;
         operation(self).map_err(|error| zbus::fdo::Error::Failed(self.remember_error(error)))
@@ -523,8 +516,8 @@ impl AorusControl {
         value: &str,
         #[zbus(header)] header: Header<'_>,
     ) -> zbus::fdo::Result<()> {
-        // This is safe in shadow mode: System76 remains the CPU-policy authority,
-        // and the active Python service performs the corresponding fan-profile write.
+        // System76 remains the CPU-policy authority. In write-enabled mode,
+        // this daemon also applies the configured firmware fan profile.
         authorize(&header)?;
         let _guard = self
             .mutations
@@ -873,14 +866,6 @@ fn discover_hardware() -> Result<Hardware, crate::hardware::HardwareError> {
         (None, Some(hwmon)) => Hardware::discover_at("/sys/devices/platform", hwmon),
         (None, None) => Hardware::discover(),
     }
-}
-
-pub fn python_service_active() -> Result<bool, String> {
-    Command::new("systemctl")
-        .args(["is-active", "--quiet", "aorus-power-profile-sync.service"])
-        .status()
-        .map(|status| status.success())
-        .map_err(|error| format!("cannot verify Python service ownership with systemctl: {error}"))
 }
 
 fn authorize(header: &Header<'_>) -> zbus::fdo::Result<()> {

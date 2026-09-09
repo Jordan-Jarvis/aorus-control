@@ -10,11 +10,6 @@ if [[ -z $destdir ]]; then
   command -v systemctl >/dev/null 2>&1 || die 'systemctl is required'
 fi
 
-mode_dropin=$destdir/etc/systemd/system/aorusd.service.d/mode.conf
-if [[ -e $mode_dropin ]]; then
-  die 'Rust write mode is enabled; run /usr/local/libexec/aorus-control-rollback-to-python --confirm-python first'
-fi
-
 if [[ -z $destdir ]] && systemctl cat aorusd.service >/dev/null 2>&1; then
   if systemctl is-active --quiet aorusd.service; then
     systemctl disable --now aorusd.service
@@ -37,9 +32,6 @@ rm -f \
   "$destdir/usr/local/bin/aorus-control" \
   "$destdir/usr/local/libexec/aorusd" \
   "$destdir/usr/local/libexec/aorus-auto-brightness" \
-  "$destdir/usr/local/libexec/aorus-control-migrate-to-rust" \
-  "$destdir/usr/local/libexec/aorus-control-rollback-to-python" \
-  "$destdir/usr/local/libexec/aorus-control-exclusive-hardware-test" \
   "$destdir/usr/local/libexec/aorus-control-fn-identity-test" \
   "$destdir/usr/local/libexec/aorus-control-fn-buttons-capture" \
   "$destdir/usr/local/libexec/aorus-brightness-hid-bpf" \
@@ -47,6 +39,7 @@ rm -f \
   "$destdir/usr/local/lib/aorus-control/0010-Gigabyte__AERO-16-YE5.bpf.o" \
   "$destdir/usr/local/lib/aorus-control/0010-Gigabyte__AERO-16-YE5-fn-identity-prototype.bpf.o" \
   "$destdir/etc/aorus-control/brightness-hid-bpf.enabled" \
+  "$destdir/etc/systemd/system/aorusd.service.d/mode.conf" \
   "$destdir/usr/lib/systemd/system/aorusd.service" \
   "$destdir/usr/lib/systemd/user/aorus-auto-brightness.service" \
   "$destdir/usr/lib/udev/rules.d/70-aorus-brightness-hid-bpf.rules" \
@@ -56,6 +49,7 @@ rm -f \
   "$destdir/usr/share/applications/io.github.aoruslinux.Control.desktop" \
   "$destdir/etc/xdg/autostart/io.github.aoruslinux.Control.desktop" \
   "$destdir/usr/share/icons/hicolor/scalable/apps/io.github.aoruslinux.Control.svg"
+rmdir "$destdir/etc/systemd/system/aorusd.service.d" 2>/dev/null || true
 
 if [[ -z $destdir ]]; then
   systemctl daemon-reload
@@ -69,5 +63,4 @@ fi
 # Deliberately preserve the configuration and state directories.
 printf '%s\n' \
   'AORUS Control binaries and integration files removed.' \
-  "Preserved $destdir/etc/aorus-control/config.toml and $destdir/var/lib/aorus-control." \
-  'The Python profile-sync service was not stopped, disabled, or modified.'
+  "Preserved $destdir/etc/aorus-control/config.toml and $destdir/var/lib/aorus-control."

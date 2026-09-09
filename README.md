@@ -35,10 +35,9 @@ or `fan_custom_speed`; custom curves are validated and read back by `aorusd`.
 | `aorusctl` | Unprivileged CLI client |
 | `aorus-auto-brightness` | Optional per-user automatic-brightness policy |
 
-`aorusd` installs in read-only **shadow mode** by default. An explicit
-migration enables Rust hardware writes only after verifying that the previous
-Python profile-sync service is active and can be restored. The migration then
-stops that service before enabling Rust, so both writers cannot run together.
+`aorusd` is write-enabled by default and is the sole hardware-control daemon
+installed by this project. Hardware mutations are serialized, validated,
+authorized through polkit, and restricted to the exact supported model.
 
 The Fn-key implementation is also native: firmware report → exact-model
 HID-BPF fixup → `hid-generic` → evdev → XKB → COSMIC. It does not use a
@@ -81,21 +80,10 @@ sudo ./install.sh
 
 The installer places binaries under `/usr/local`, installs systemd, D-Bus,
 polkit, udev, desktop, icon, and XDG-autostart files, and preserves an existing
-`/etc/aorus-control/config.toml`. It never invokes `sudo` itself. Use
+`/etc/aorus-control/config.toml`. It enables and starts the write-enabled
+`aorusd` service and never invokes `sudo` itself. Use
 `DESTDIR=/path/to/staging ./install.sh` to inspect a package staging tree
 without changing the live system.
-
-Reinstalling on a machine already migrated to Rust preserves write ownership.
-A first installation remains in shadow mode until the explicit cutover:
-
-```sh
-sudo /usr/local/libexec/aorus-control-migrate-to-rust --confirm-rust-write
-```
-
-That helper requires the previous `aorus-power-profile-sync.service` as a
-verified fallback. It creates a private backup under
-`/var/lib/aorus-control/migration-backups/` and restores Python automatically
-if the cutover fails.
 
 Launch **AORUS Control** from the application menu. Native Fn-key support can
 then be enabled under **Hotkeys → Laptop Fn buttons**, or from the desktop user
@@ -140,13 +128,9 @@ typed D-Bus API and polkit authorization.
 Hardware paths are discovered by device identity; unstable `hwmonN` and
 `eventN` numbers are never persisted.
 
-## Rollback and uninstall
-
-Restore the previous Python writer before removing a write-enabled Rust
-installation:
+## Uninstall
 
 ```sh
-sudo /usr/local/libexec/aorus-control-rollback-to-python --confirm-python
 sudo ./uninstall.sh
 ```
 
@@ -162,18 +146,14 @@ Run the complete non-destructive check suite with:
 ```
 
 It runs formatting, tests, Clippy, release builds, packaging validation, udev
-validation, and an ambient-light module build check. Hardware-writing tests
-are separate, explicit, guarded procedures documented in
-[docs/exclusive-hardware-test.md](docs/exclusive-hardware-test.md) and
-[docs/brightness-debug.md](docs/brightness-debug.md).
+validation, and an ambient-light module build check. Fn-key hardware
+diagnostics are documented in [docs/brightness-debug.md](docs/brightness-debug.md).
 
 Additional references:
 
 - [D-Bus API](docs/dbus-api.md)
 - [Hardware baseline](docs/hardware-baseline.md)
 - [Native Fn-key implementation](brightness/README.md)
-- [Development plan](docs/development-plan.md)
-- [Remaining validation](docs/todo.md)
 
 ## License
 

@@ -28,8 +28,6 @@ for file in \
   70-aorus-brightness-hid-bpf.rules; do
   [[ -f $root_dir/packaging/$file ]] || die "missing packaging/$file"
 done
-[[ -f $root_dir/tools/exclusive-hardware-test.sh ]] \
-  || die 'missing tools/exclusive-hardware-test.sh'
 [[ -f $root_dir/tools/fn-identity-hid-bpf-test.sh ]] \
   || die 'missing tools/fn-identity-hid-bpf-test.sh'
 [[ -f $root_dir/tools/fn-buttons-capture.sh ]] \
@@ -38,9 +36,6 @@ done
 config_dir=$destdir/etc/aorus-control
 etc_file=$config_dir/config.toml
 mode_dropin=$destdir/etc/systemd/system/aorusd.service.d/mode.conf
-if [[ -e $mode_dropin ]] && ! grep -Fqx 'ExecStart=/usr/local/libexec/aorusd --write-enabled' "$mode_dropin"; then
-  die "unexpected Rust daemon override at $mode_dropin; refusing to replace it"
-fi
 if [[ -z $destdir && -e /etc/aorus-control/brightness-hid-bpf.enabled ]]; then
   [[ -f $root_dir/target/aorus-brightness.bpf.o ||
      -f /usr/local/lib/aorus-control/0010-Gigabyte__AERO-16-YE5.bpf.o ]] ||
@@ -77,12 +72,6 @@ install -D -m 0644 "$root_dir/packaging/io.github.aoruslinux.Control.Autostart.d
   "$destdir/etc/xdg/autostart/io.github.aoruslinux.Control.desktop"
 install -D -m 0644 "$root_dir/packaging/io.github.aoruslinux.Control.svg" \
   "$destdir/usr/share/icons/hicolor/scalable/apps/io.github.aoruslinux.Control.svg"
-install -D -m 0755 "$root_dir/packaging/migrate-to-rust.sh" \
-  "$destdir/usr/local/libexec/aorus-control-migrate-to-rust"
-install -D -m 0755 "$root_dir/packaging/rollback-to-python.sh" \
-  "$destdir/usr/local/libexec/aorus-control-rollback-to-python"
-install -D -m 0755 "$root_dir/tools/exclusive-hardware-test.sh" \
-  "$destdir/usr/local/libexec/aorus-control-exclusive-hardware-test"
 install -D -m 0755 "$root_dir/tools/fn-identity-hid-bpf-test.sh" \
   "$destdir/usr/local/libexec/aorus-control-fn-identity-test"
 install -D -m 0755 "$root_dir/tools/fn-buttons-capture.sh" \
@@ -110,6 +99,10 @@ rm -f \
   "$destdir/usr/lib/systemd/user/aorus-hotkey-bridge.service" \
   "$destdir/usr/lib/udev/rules.d/70-aorus-hotkey-bridge.rules"
 
+# The packaged service now uses the daemon's write-enabled default directly.
+rm -f "$mode_dropin"
+rmdir "$destdir/etc/systemd/system/aorusd.service.d" 2>/dev/null || true
+
 if [[ -z $destdir ]]; then
   systemctl daemon-reload
   udevadm control --reload-rules
@@ -132,16 +125,7 @@ if [[ -z $destdir && -e /etc/aorus-control/brightness-hid-bpf.enabled ]]; then
 else
   brightness_status='Native HID Fn-key support remains disabled until enabled in the app.'
 fi
-if [[ -e $mode_dropin ]]; then
-  daemon_status='Updated AORUS Control with existing Rust write ownership preserved.'
-  ownership_status='Rust remains the sole persistent fan-control writer.'
-else
-  daemon_status='Installed AORUS Control in shadow/read-only mode.'
-  ownership_status='Persistent Rust write ownership requires the explicit migrate-to-rust operation.'
-fi
 printf '%s\n' \
-  "$daemon_status" \
+  'Installed AORUS Control with write-enabled hardware control.' \
   'Automatic brightness is installed but remains disabled until enabled in the app.' \
-  "$brightness_status" \
-  'The Python profile-sync service was not stopped, disabled, or modified.' \
-  "$ownership_status"
+  "$brightness_status"

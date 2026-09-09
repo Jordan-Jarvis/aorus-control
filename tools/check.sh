@@ -11,6 +11,8 @@ fi
 cargo test --all-features
 cargo clippy --all-targets --all-features -- -D warnings
 cargo build --release --all-features
+target/release/aorusd --help | grep -Fqx \
+  'Default mode is write-enabled; --shadow disables hardware mutations.'
 
 while IFS= read -r script; do
   bash -n "$script"

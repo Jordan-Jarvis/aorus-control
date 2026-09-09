@@ -1,6 +1,4 @@
 # Installed only when /etc/aorus-control/config.toml does not already exist.
-# A first installation uses read-only shadow mode. The installed migration
-# helper performs the explicit, rollback-capable cutover to Rust write mode.
 version = 1
 
 [profile_mappings]

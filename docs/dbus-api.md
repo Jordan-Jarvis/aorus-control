@@ -5,7 +5,7 @@ This is the integration contract between `aorusd`, `aorusctl`, and the native UI
 - Bus: system
 - Destination/interface: `io.github.aoruslinux.Control1`
 - Path: `/io/github/aoruslinux/Control1`
-- Default daemon mode: `shadow` (read-only while the Python service is authoritative)
+- Default daemon mode: `write-enabled`
 
 ## Methods
 
@@ -31,14 +31,10 @@ firmware reset or an unverified rollback. An unverified rollback disables the
 stored Custom curve and resets Custom mappings to conservative firmware
 profiles.
 
-`SetPowerProfile` is available in shadow mode: it changes the System76 power
-policy and lets the existing Python profile-sync service synchronize the fan
-profile. Every direct AORUS mutation (`SetFanMode`, `ReapplyFanProfile`,
-`CaptureFanCurve`, `SetFanCurve`, `SetProfileMappings`, charging, GPU, and native Fn-key methods) fails while
-the daemon is in shadow mode. Direct writes require write-enabled mode, the
-Python service to be inactive, and polkit action
-`io.github.aoruslinux.control.modify`; write mode is never enabled by the
-normal installer without the explicit migration helper.
+Every mutation requires polkit action
+`io.github.aoruslinux.control.modify`. The daemon is write-enabled by default;
+an explicit `aorusd --shadow` launch keeps telemetry and System76 power-profile
+requests available while disabling direct AORUS hardware writes.
 
 ## Status keys
 
@@ -87,5 +83,4 @@ restores the previous selector. Consequently, a curve read can fail and can
 briefly change that selector; callers should not poll it as telemetry. Curve
 reads and writes are serialized by the daemon. Strict shadow mode never writes
 the selector: it returns the stored validated curve when one exists, otherwise
-`GetFanCurve` reports that the curve is unavailable. A live firmware curve is
-first captured only in an exclusive write-enabled test window.
+`GetFanCurve` reports that the curve is unavailable.
