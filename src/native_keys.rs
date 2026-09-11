@@ -10,8 +10,15 @@ use std::{
 
 use crate::fn_buttons::{FnAction, FnButtonMappings, PhysicalButtonId};
 
-const HELPER: &str = "/usr/local/libexec/aorus-brightness-hid-bpf";
-const OBJECT: &str = "/usr/local/lib/aorus-control/0010-Gigabyte__AERO-16-YE5.bpf.o";
+const INSTALL_PREFIX: &str = env!("AORUS_CONTROL_PREFIX");
+
+fn helper_path() -> PathBuf {
+    Path::new(INSTALL_PREFIX).join("libexec/aorus-brightness-hid-bpf")
+}
+
+fn object_path() -> PathBuf {
+    Path::new(INSTALL_PREFIX).join("lib/aorus-control/0010-Gigabyte__AERO-16-YE5.bpf.o")
+}
 const ENABLED: &str = "/etc/aorus-control/brightness-hid-bpf.enabled";
 const HID_DEVICES: &str = "/sys/bus/hid/devices";
 const INPUT_DEVICES: &str = "/sys/class/input";
@@ -89,10 +96,8 @@ impl ActionInput {
 
 pub fn status() -> NativeKeyStatus {
     let devices = matching_devices().unwrap_or_default();
-    let supported = exact_model()
-        && Path::new(HELPER).is_file()
-        && Path::new(OBJECT).is_file()
-        && !devices.is_empty();
+    let supported =
+        exact_model() && helper_path().is_file() && object_path().is_file() && !devices.is_empty();
     let generation = map_generation();
     let attached = supported
         && devices
@@ -138,7 +143,7 @@ pub fn is_enabled() -> bool {
 
 pub fn set_enabled(enabled: bool) -> Result<(), String> {
     let devices = matching_devices()?;
-    if !exact_model() || !Path::new(HELPER).is_file() || !Path::new(OBJECT).is_file() {
+    if !exact_model() || !helper_path().is_file() || !object_path().is_file() {
         return Err("native Fn-key support is not installed for this laptop".to_owned());
     }
     if devices.is_empty() {
@@ -560,7 +565,7 @@ fn read_trimmed(path: impl AsRef<Path>) -> Option<String> {
 }
 
 fn helper(mode: &str, device: &Path) -> Result<(), String> {
-    let output = Command::new(HELPER)
+    let output = Command::new(helper_path())
         .arg(mode)
         .arg(device)
         .output()

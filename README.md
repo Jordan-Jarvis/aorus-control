@@ -110,6 +110,26 @@ without changing the live system.
 To update, pull a tagged release, repeat the build commands, and run
 `sudo ./install.sh` again. Existing configuration is preserved.
 
+## Debian packages
+
+To build the Ubuntu/Pop!_OS 24.04 x86_64 packages locally after building the
+native prerequisites, run:
+
+```sh
+./tools/build-deb.sh dist
+sudo apt install ./dist/aorus-control_0.1.0-1_amd64.deb
+# Optional ambient-light support:
+sudo apt install ./dist/aorus-control-als-dkms_0.1.0-1_all.deb
+```
+
+Tagged releases build these packages automatically in GitHub Actions. The
+main package installs the daemon, native HID-BPF Fn-key path, and system
+integration. The ALS/DKMS package is optional and builds against the installed
+kernel. Installation is allowed on other Gigabyte/AORUS laptops with a
+warning, but hardware writes and the Fn-key descriptor fix remain gated to the
+verified model.
+
+
 Launch **AORUS Control** from the application menu. Native Fn-key support can
 then be enabled under **Hotkeys → Laptop Fn buttons**, or from the desktop user
 account with:

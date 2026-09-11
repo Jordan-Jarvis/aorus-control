@@ -20,6 +20,7 @@ pub const COSMIC_SHORTCUTS_ID: &str = "com.system76.CosmicSettings.Shortcuts";
 const OWNER: &str = "AORUS Control: ";
 const FN_OWNER: &str = "AORUS Control: fn-button:";
 const DEFAULTS: &str = "/usr/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults";
+const INSTALL_PREFIX: &str = env!("AORUS_CONTROL_PREFIX");
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum HotkeyAction {
@@ -99,59 +100,43 @@ impl HotkeyAction {
         }
     }
 
-    const fn ron(self) -> &'static str {
+    fn command(self) -> Option<String> {
+        let command = match self {
+            Self::OpenApp => "aorus-control".to_owned(),
+            Self::PowerBattery => "aorusctl profile battery".to_owned(),
+            Self::PowerBalanced => "aorusctl profile balanced".to_owned(),
+            Self::PowerPerformance => "aorusctl profile performance".to_owned(),
+            Self::FanNormal => "aorusctl fan normal".to_owned(),
+            Self::FanSilent => "aorusctl fan silent".to_owned(),
+            Self::FanGaming => "aorusctl fan gaming".to_owned(),
+            Self::FanCustom => "aorusctl fan custom".to_owned(),
+            Self::FanReapply => "aorusctl fan reapply".to_owned(),
+            _ => return None,
+        };
+        Some(format!("{INSTALL_PREFIX}/bin/{command}"))
+    }
+
+    fn ron(self) -> String {
         match self {
-            Self::OpenApp => "Spawn(\"/usr/local/bin/aorus-control\")",
-            Self::PowerBattery => "Spawn(\"/usr/local/bin/aorusctl profile battery\")",
-            Self::PowerBalanced => "Spawn(\"/usr/local/bin/aorusctl profile balanced\")",
-            Self::PowerPerformance => "Spawn(\"/usr/local/bin/aorusctl profile performance\")",
-            Self::FanNormal => "Spawn(\"/usr/local/bin/aorusctl fan normal\")",
-            Self::FanSilent => "Spawn(\"/usr/local/bin/aorusctl fan silent\")",
-            Self::FanGaming => "Spawn(\"/usr/local/bin/aorusctl fan gaming\")",
-            Self::FanCustom => "Spawn(\"/usr/local/bin/aorusctl fan custom\")",
-            Self::FanReapply => "Spawn(\"/usr/local/bin/aorusctl fan reapply\")",
-            Self::BrightnessDown => "System(BrightnessDown)",
-            Self::BrightnessUp => "System(BrightnessUp)",
-            Self::VolumeDown => "System(VolumeLower)",
-            Self::VolumeUp => "System(VolumeRaise)",
-            Self::VolumeMute => "System(Mute)",
-            Self::MediaPlayPause => "System(PlayPause)",
+            Self::BrightnessDown => "System(BrightnessDown)".to_owned(),
+            Self::BrightnessUp => "System(BrightnessUp)".to_owned(),
+            Self::VolumeDown => "System(VolumeLower)".to_owned(),
+            Self::VolumeUp => "System(VolumeRaise)".to_owned(),
+            Self::VolumeMute => "System(Mute)".to_owned(),
+            Self::MediaPlayPause => "System(PlayPause)".to_owned(),
+            _ => format!("Spawn(\"{}\")", self.command().expect("spawn action")),
         }
     }
 
     fn configured_action(self) -> ConfiguredAction {
         match self {
-            Self::OpenApp => ConfiguredAction::Spawn("/usr/local/bin/aorus-control".to_owned()),
-            Self::PowerBattery => {
-                ConfiguredAction::Spawn("/usr/local/bin/aorusctl profile battery".to_owned())
-            }
-            Self::PowerBalanced => {
-                ConfiguredAction::Spawn("/usr/local/bin/aorusctl profile balanced".to_owned())
-            }
-            Self::PowerPerformance => {
-                ConfiguredAction::Spawn("/usr/local/bin/aorusctl profile performance".to_owned())
-            }
-            Self::FanNormal => {
-                ConfiguredAction::Spawn("/usr/local/bin/aorusctl fan normal".to_owned())
-            }
-            Self::FanSilent => {
-                ConfiguredAction::Spawn("/usr/local/bin/aorusctl fan silent".to_owned())
-            }
-            Self::FanGaming => {
-                ConfiguredAction::Spawn("/usr/local/bin/aorusctl fan gaming".to_owned())
-            }
-            Self::FanCustom => {
-                ConfiguredAction::Spawn("/usr/local/bin/aorusctl fan custom".to_owned())
-            }
-            Self::FanReapply => {
-                ConfiguredAction::Spawn("/usr/local/bin/aorusctl fan reapply".to_owned())
-            }
             Self::BrightnessDown => ConfiguredAction::System(SystemAction::BrightnessDown),
             Self::BrightnessUp => ConfiguredAction::System(SystemAction::BrightnessUp),
             Self::VolumeDown => ConfiguredAction::System(SystemAction::VolumeLower),
             Self::VolumeUp => ConfiguredAction::System(SystemAction::VolumeRaise),
             Self::VolumeMute => ConfiguredAction::System(SystemAction::Mute),
             Self::MediaPlayPause => ConfiguredAction::System(SystemAction::PlayPause),
+            _ => ConfiguredAction::Spawn(self.command().expect("spawn action")),
         }
     }
 
@@ -337,10 +322,7 @@ fn mappings_from(shortcuts: &Shortcuts) -> Result<Vec<HotkeyMapping>, HotkeyErro
         };
         let action = HotkeyAction::from_description(description)
             .ok_or_else(|| HotkeyError::OwnedShortcutModified(owner_action.to_owned()))?;
-        if !matches!(
-            value.into_rust::<ConfiguredAction>(),
-            Ok(configured) if configured == action.configured_action()
-        ) {
+        if !configured_action_matches(value.into_rust::<ConfiguredAction>(), action) {
             return Err(HotkeyError::Modified(action));
         }
         mappings.push(HotkeyMapping {
@@ -349,6 +331,28 @@ fn mappings_from(shortcuts: &Shortcuts) -> Result<Vec<HotkeyMapping>, HotkeyErro
         });
     }
     normalize_mappings(&mappings)
+}
+
+fn configured_action_matches(
+    configured: Result<ConfiguredAction, ron::de::SpannedError>,
+    action: HotkeyAction,
+) -> bool {
+    let Ok(configured) = configured else {
+        return false;
+    };
+    let expected = action.configured_action();
+    if configured == expected {
+        return true;
+    }
+    // Preserve shortcuts written by the source installer when upgrading to
+    // the Debian package, whose binaries live under /usr/bin.
+    match (configured, expected) {
+        (ConfiguredAction::Spawn(actual), ConfiguredAction::Spawn(expected)) => actual
+            .strip_prefix("/usr/local/bin/")
+            .zip(expected.strip_prefix("/usr/bin/"))
+            .is_some_and(|(actual, expected)| actual == expected),
+        _ => false,
+    }
 }
 
 pub fn save_mappings(mappings: &[HotkeyMapping]) -> Result<(), String> {

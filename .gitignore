@@ -14,3 +14,5 @@ brightness/als/Module.symvers
 brightness/als/modules.order
 brightness/als/.*.cmd
 *.swp
+
+/dist*/

@@ -11,21 +11,27 @@ command -v dkms >/dev/null || die 'install dkms and matching linux-headers first
 kernel_release=$(uname -r)
 [[ -f /lib/modules/$kernel_release/build/Makefile ]] || die 'matching kernel headers missing'
 source_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../brightness/als" && pwd)
-destination=/usr/src/aorus-als-0.1.0
+version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$(dirname -- "${BASH_SOURCE[0]}")/../Cargo.toml" | head -1)
+[[ -n $version ]] || die 'could not read AORUS Control version'
+destination=/usr/src/aorus-als-$version
 # Never overwrite the source of a registered DKMS version with different code.
-for file in aorus-als.c Makefile dkms.conf; do
+for file in aorus-als.c Makefile; do
   if [[ -e $destination/$file ]]; then
     cmp -s "$source_dir/$file" "$destination/$file" || die "existing $destination/$file differs; a new DKMS version is required"
   fi
 done
 install -d -m 0755 "$destination"
 for file in aorus-als.c Makefile dkms.conf; do
-  install -m 0644 "$source_dir/$file" "$destination/$file"
+  if [[ $file == dkms.conf ]]; then
+    sed "s/#MODULE_VERSION#/$version/g" "$source_dir/$file" > "$destination/$file"
+  else
+    install -m 0644 "$source_dir/$file" "$destination/$file"
+  fi
 done
-if [[ -z $(dkms status -m aorus-als -v 0.1.0) ]]; then
-  dkms add -m aorus-als -v 0.1.0
+if [[ -z $(dkms status -m aorus-als -v "$version") ]]; then
+  dkms add -m aorus-als -v "$version"
 fi
-dkms install -m aorus-als -v 0.1.0 -k "$kernel_release"
+dkms install -m aorus-als -v "$version" -k "$kernel_release"
 # modprobe leaves an already-loaded module in place; no unload or rebind.
 modprobe aorus-als
 found=false
