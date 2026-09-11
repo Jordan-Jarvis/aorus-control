@@ -32,7 +32,6 @@ rm -f \
   "$destdir/usr/local/bin/aorus-control" \
   "$destdir/usr/local/libexec/aorusd" \
   "$destdir/usr/local/libexec/aorus-auto-brightness" \
-  "$destdir/usr/local/libexec/aorus-control-fn-identity-test" \
   "$destdir/usr/local/libexec/aorus-control-fn-buttons-capture" \
   "$destdir/usr/local/libexec/aorus-brightness-hid-bpf" \
   "$destdir/usr/local/libexec/aorus-udev-hid-bpf" \
@@ -63,4 +62,4 @@ fi
 # Deliberately preserve the configuration and state directories.
 printf '%s\n' \
   'AORUS Control binaries and integration files removed.' \
-  "Preserved $destdir/etc/aorus-control/config.toml and $destdir/var/lib/aorus-control."
+  "Preserved $destdir/etc/aorus-control configuration and $destdir/var/lib/aorus-control."

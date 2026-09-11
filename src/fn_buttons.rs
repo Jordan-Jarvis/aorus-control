@@ -1,8 +1,8 @@
-//! Typed per-user mappings for the laptop's physical Fn buttons.
+//! Typed system-wide mappings for the laptop's physical Fn buttons.
 
 use std::{
     collections::BTreeMap,
-    env, fmt, fs,
+    fmt, fs,
     io::{self, Write},
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
@@ -67,42 +67,22 @@ impl PhysicalButtonId {
         }
     }
 
-    /// COSMIC keysym produced by the native HID identity or firmware chord.
-    pub const fn trigger(self) -> &'static str {
+    /// Capture-proven HID usage used by the native HID-BPF translation.
+    pub const fn native_scancode(self) -> Option<u32> {
         match self {
-            // The standard XKB inet(evdev) map translates Linux KEY_F13-F17
-            // into these keysyms before COSMIC matches global shortcuts.
-            Self::BrightnessDown => "XF86Tools",
-            Self::BrightnessUp => "XF86Launch5",
-            Self::Fan => "XF86Launch6",
-            Self::Sleep => "XF86Launch7",
-            Self::Wifi => "XF86Launch8",
-            // These two buttons already emit unique native keyboard chords on
-            // interface 0. Reuse them instead of adding a second HID-BPF
-            // translation that would duplicate each physical press.
-            Self::Display => "Super+p",
-            Self::SquareX => "F19",
-            Self::TouchpadLock => "Super+Ctrl+F24",
-            // F21 is intentionally unused: the firmware's airplane-mode
-            // report already has a native Linux input path.
-            Self::Ai => "F22",
+            Self::BrightnessDown => Some(0x0007_0068),
+            Self::BrightnessUp => Some(0x0007_0069),
+            Self::Fan => Some(0x0007_006a),
+            Self::Sleep => Some(0x0007_006b),
+            Self::Wifi => Some(0x0007_006c),
+            Self::SquareX => Some(0x0007_006e),
+            Self::Ai => Some(0x0007_0071),
+            Self::Display | Self::TouchpadLock => None,
         }
     }
 
-    /// Trigger written by development builds before the native interface-0
-    /// reports were wired directly. It is accepted only so the next save can
-    /// replace the exact AORUS-owned entry.
-    pub const fn legacy_trigger(self) -> Option<&'static str> {
-        match self {
-            Self::BrightnessDown => Some("F13"),
-            Self::BrightnessUp => Some("F14"),
-            Self::Fan => Some("F15"),
-            Self::Sleep => Some("F16"),
-            Self::Wifi => Some("F17"),
-            Self::Display => Some("F18"),
-            Self::TouchpadLock => Some("F20"),
-            _ => None,
-        }
+    pub const fn remappable(self) -> bool {
+        self.native_scancode().is_some()
     }
 
     pub const fn default_action(self) -> FnAction {
@@ -118,39 +98,22 @@ impl PhysicalButtonId {
         }
     }
 
-    pub const fn evidence(self) -> ButtonEvidence {
+    pub const fn evidence(self) -> &'static str {
         match self {
-            Self::BrightnessDown => ButtonEvidence::Captured("04 00 00 7d"),
-            Self::BrightnessUp => ButtonEvidence::Captured("04 00 00 7e"),
-            Self::Fan => ButtonEvidence::Captured("04 00 00 84"),
-            Self::Sleep => ButtonEvidence::Captured("02 02 press; 02 00 release"),
-            Self::Wifi => ButtonEvidence::Captured("04 00 00 7c"),
-            Self::Display => ButtonEvidence::Captured("interface-0 Super+P press/release sequence"),
-            Self::SquareX => ButtonEvidence::Captured("04 00 00 80"),
-            Self::TouchpadLock => {
-                ButtonEvidence::Captured("04 00 00 81 plus interface-0 keyboard sequence")
-            }
-            Self::Ai => ButtonEvidence::Captured("04 00 00 88"),
+            Self::BrightnessDown => "04 00 00 7d",
+            Self::BrightnessUp => "04 00 00 7e",
+            Self::Fan => "04 00 00 84",
+            Self::Sleep => "02 02 press; 02 00 release",
+            Self::Wifi => "04 00 00 7c",
+            Self::Display => "interface-0 Super+P press/release sequence",
+            Self::SquareX => "04 00 00 80",
+            Self::TouchpadLock => "04 00 00 81 plus interface-0 keyboard sequence",
+            Self::Ai => "04 00 00 88",
         }
     }
 
     pub fn from_id(id: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|button| button.id() == id)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ButtonEvidence {
-    Captured(&'static str),
-    NotCaptured,
-}
-
-impl ButtonEvidence {
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Captured(_) => "Captured native trigger",
-            Self::NotCaptured => "Not captured",
-        }
     }
 }
 
@@ -265,6 +228,13 @@ impl FnAction {
         }
     }
 
+    /// Actions the translated interface can emit for a vendor-report button.
+    /// Display and touchpad actions stay firmware-native because their source
+    /// buttons also emit interface-0 chords that cannot be suppressed here.
+    pub const fn native_hid_supported(self) -> bool {
+        !matches!(self, Self::DisplayToggle | Self::TouchpadToggle)
+    }
+
     pub fn from_id(id: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|action| action.id() == id)
     }
@@ -309,6 +279,37 @@ impl FnButtonMappings {
             .into_iter()
             .map(|button| (button, self.get(button)))
     }
+
+    pub fn from_wire(values: BTreeMap<String, String>) -> Result<Self, FnButtonError> {
+        let mut mappings = Self::default();
+        for (button, action) in values {
+            let button = PhysicalButtonId::from_id(&button)
+                .ok_or_else(|| FnButtonError::UnknownButton(button.clone()))?;
+            let action = FnAction::from_id(&action)
+                .ok_or_else(|| FnButtonError::UnknownAction(action.clone()))?;
+            mappings.set(button, action);
+        }
+        mappings.validate()?;
+        Ok(mappings)
+    }
+
+    pub fn to_wire(&self) -> BTreeMap<String, String> {
+        self.iter()
+            .map(|(button, action)| (button.id().to_owned(), action.id().to_owned()))
+            .collect()
+    }
+
+    pub fn validate(&self) -> Result<(), FnButtonError> {
+        for (button, action) in self.iter() {
+            if !button.remappable() && action != button.default_action() {
+                return Err(FnButtonError::FixedButton(button));
+            }
+            if button.remappable() && !action.native_hid_supported() {
+                return Err(FnButtonError::UnsupportedAction { button, action });
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -319,6 +320,11 @@ pub enum FnButtonError {
     UnsupportedVersion(u32),
     UnknownButton(String),
     UnknownAction(String),
+    FixedButton(PhysicalButtonId),
+    UnsupportedAction {
+        button: PhysicalButtonId,
+        action: FnAction,
+    },
     Readback,
 }
 
@@ -334,6 +340,17 @@ impl fmt::Display for FnButtonError {
             ),
             Self::UnknownButton(button) => write!(f, "unknown physical button '{button}'"),
             Self::UnknownAction(action) => write!(f, "unknown Fn action '{action}'"),
+            Self::FixedButton(button) => write!(
+                f,
+                "{} uses a firmware-native action and cannot be remapped",
+                button.label()
+            ),
+            Self::UnsupportedAction { button, action } => write!(
+                f,
+                "{} cannot use the native HID action '{}'",
+                button.label(),
+                action.label()
+            ),
             Self::Readback => f.write_str("Fn-button configuration readback did not match"),
         }
     }
@@ -347,10 +364,6 @@ struct StoredMappings {
     version: u32,
     #[serde(default)]
     buttons: BTreeMap<String, String>,
-}
-
-pub fn load_mappings() -> Result<FnButtonMappings, FnButtonError> {
-    load_mappings_from(config_path()?)
 }
 
 pub fn load_mappings_from(path: impl AsRef<Path>) -> Result<FnButtonMappings, FnButtonError> {
@@ -380,11 +393,8 @@ pub fn load_mappings_from(path: impl AsRef<Path>) -> Result<FnButtonMappings, Fn
             .ok_or_else(|| FnButtonError::UnknownAction(action.clone()))?;
         mappings.set(button, action);
     }
+    mappings.validate()?;
     Ok(mappings)
-}
-
-pub fn save_mappings(mappings: &FnButtonMappings) -> Result<(), FnButtonError> {
-    save_mappings_to(config_path()?, mappings)
 }
 
 pub fn save_mappings_to(
@@ -392,6 +402,7 @@ pub fn save_mappings_to(
     mappings: &FnButtonMappings,
 ) -> Result<(), FnButtonError> {
     let path = path.as_ref();
+    mappings.validate()?;
     let stored = StoredMappings {
         version: CONFIG_VERSION,
         buttons: mappings
@@ -407,19 +418,6 @@ pub fn save_mappings_to(
         return Err(FnButtonError::Readback);
     }
     Ok(())
-}
-
-fn config_path() -> Result<PathBuf, FnButtonError> {
-    let base = env::var_os("XDG_CONFIG_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            env::var_os("HOME")
-                .filter(|value| !value.is_empty())
-                .map(|home| PathBuf::from(home).join(".config"))
-        })
-        .ok_or(FnButtonError::ConfigHome)?;
-    Ok(base.join("aorus-control/fn-buttons.toml"))
 }
 
 fn write_atomic(path: &Path, text: &str) -> Result<(), FnButtonError> {
@@ -462,6 +460,7 @@ fn write_atomic(path: &Path, text: &str) -> Result<(), FnButtonError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
 
     fn temp_file(name: &str) -> PathBuf {
         env::temp_dir().join(format!(
@@ -475,16 +474,18 @@ mod tests {
     }
 
     #[test]
-    fn defaults_cover_every_button_and_triggers_are_unique() {
+    fn defaults_cover_every_button_and_seven_are_remappable() {
         let defaults = FnButtonMappings::default();
-        let triggers: std::collections::HashSet<_> = PhysicalButtonId::ALL
-            .into_iter()
-            .map(PhysicalButtonId::trigger)
-            .collect();
         assert_eq!(defaults.iter().count(), PhysicalButtonId::ALL.len());
-        assert_eq!(triggers.len(), PhysicalButtonId::ALL.len());
-        assert_eq!(PhysicalButtonId::Display.trigger(), "Super+p");
-        assert_eq!(PhysicalButtonId::TouchpadLock.trigger(), "Super+Ctrl+F24");
+        assert_eq!(
+            PhysicalButtonId::ALL
+                .into_iter()
+                .filter(|button| button.remappable())
+                .count(),
+            7
+        );
+        assert!(!PhysicalButtonId::Display.remappable());
+        assert!(!PhysicalButtonId::TouchpadLock.remappable());
     }
 
     #[test]
@@ -499,6 +500,27 @@ mod tests {
             0o600
         );
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn wire_format_rejects_unknown_values_and_fills_defaults() {
+        let mappings = FnButtonMappings::from_wire(BTreeMap::from([(
+            "ai".to_owned(),
+            "screenshot".to_owned(),
+        )]))
+        .unwrap();
+        assert_eq!(mappings.get(PhysicalButtonId::Ai), FnAction::Screenshot);
+        assert_eq!(
+            mappings.get(PhysicalButtonId::BrightnessDown),
+            FnAction::BrightnessDown
+        );
+        assert!(
+            FnButtonMappings::from_wire(BTreeMap::from([(
+                "unknown".to_owned(),
+                "disabled".to_owned(),
+            )]))
+            .is_err()
+        );
     }
 
     #[test]
@@ -544,5 +566,22 @@ mod tests {
         assert_eq!(load_mappings_from(&persisted).unwrap(), mappings);
         let _ = fs::remove_file(path);
         let _ = fs::remove_file(persisted);
+    }
+
+    #[test]
+    fn rejects_actions_the_native_path_cannot_emit() {
+        let error = FnButtonMappings::from_wire(BTreeMap::from([(
+            "fan".to_owned(),
+            "display-toggle".to_owned(),
+        )]))
+        .unwrap_err();
+        assert!(matches!(error, FnButtonError::UnsupportedAction { .. }));
+
+        let error = FnButtonMappings::from_wire(BTreeMap::from([(
+            "display".to_owned(),
+            "disabled".to_owned(),
+        )]))
+        .unwrap_err();
+        assert!(matches!(error, FnButtonError::FixedButton(_)));
     }
 }

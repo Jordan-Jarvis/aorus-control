@@ -1,57 +1,46 @@
-# AERO 16 YE5 native Fn-key HID path
+# Native Fn-key HID path
 
-This implementation is deliberately restricted to the captured machine:
+The production path is restricted to the tested GIGABYTE AERO 16 YE5
+(`P86VE`):
 
-- DMI: `GIGABYTE`, `AERO 16 YE5`, `P86VE`;
-- USB HID: `1044:7a3a`;
-- USB interface 2 only; and
-- the exact 253-byte source report descriptor with SHA-256
+- USB HID `1044:7a3a`;
+- interface 2 only; and
+- the exact 253-byte source report descriptor, SHA-256
   `8c466c33cedbb3be04738089da3c09d4319443a793b462319708a8f8364be17a`.
 
-Do **not** load the retired `aorus-brightness` HID module. A product-wide HID
-driver match makes `hid-generic` relinquish every interface of the composite
-keyboard before `probe` can reject the wrong interfaces, disabling the
-internal keyboard.
+The HID-BPF program leaves all four composite-keyboard interfaces on
+`hid-generic`. It fixes only the exact interface-2 descriptor and translates
+the captured vendor reports before the normal Linux HID input mapper:
 
-If a retired test left an interface unbound, recover it with an external
-keyboard:
-
-```sh
-sudo rmmod aorus_brightness 2>/dev/null || true
-sudo bash -c 'for d in /sys/bus/hid/devices/0003:1044:7A3A.*; do
-  [ -e "$d" ] || continue
-  [ -L "$d/driver" ] || printf "%s\n" "${d##*/}" > /sys/bus/hid/drivers/hid-generic/bind
-done'
-```
-
-## Production implementation
-
-The production HID-BPF program leaves all four interfaces on `hid-generic`.
-It translates only the capture-proven interface-2 reports below into ordinary,
-modifierless keyboard identities consumed by the user's COSMIC shortcuts:
-
-| Firmware report | Native identity | Physical button |
+| Firmware report | Default native action | Button |
 | --- | --- | --- |
-| `04 00 00 7d` | `F13` | brightness down |
-| `04 00 00 7e` | `F14` | brightness up |
-| `04 00 00 84` | `F15` | fan |
-| `02 02` / `02 00` | `F16` press/release | sleep/Zz |
-| `04 00 00 7c` | `F17` | Wi-Fi |
-| `04 00 00 80` | `F19` | Square-X |
-| `04 00 00 88` | `F22` | AI |
+| `04 00 00 7d` | Consumer Brightness Down | brightness down |
+| `04 00 00 7e` | Consumer Brightness Up | brightness up |
+| `04 00 00 84` | reserved daemon action consumed by `aorusd` | fan |
+| `02 02` / `02 00` | Consumer Sleep press/release | sleep / Zz |
+| `04 00 00 7c` | Wireless Radio Control | Wi-Fi |
+| `04 00 00 80` | reserved daemon action consumed by `aorusd` | Square-X |
+| `04 00 00 88` | reserved daemon action consumed by `aorusd` | AI |
 
-Display already emits the distinct native `Super+P` interface-0 sequence.
-Touchpad lock already emits `Super+Ctrl+F24` on interface 0; its simultaneous
-interface-2 `04 00 00 81` report is deliberately not translated, preventing a
-single press from dispatching twice. Airplane mode remains Linux-owned and
-unchanged. Unrelated reports pass through byte-for-byte. There is no hidraw
-listener, uinput device, userspace repeat loop, or replacement HID driver.
+The version-2 pinned action map lets each of the seven vendor-report buttons
+select any supported standard action, an AORUS power/fan profile action, or
+`Disabled`. Disabled entries emit a neutral report, suppressing the original
+vendor event without generating synthetic input. The map contains one entry
+per button plus a generation marker and is updated and read back with rollback by `aorusd`.
 
-The single-report buttons use relative HID fields, producing native pulses
-without inventing release timing. Sleep uses its captured absolute
-press/release pair.
+Display/LCD and touchpad-lock keep their firmware-native interface-0 actions;
+their duplicate interface-2 reports are not translated. Airplane mode and the
+physical volume buttons are already handled by Linux and remain untouched.
 
-Build the program and upstream loader with:
+There is no hidraw listener, uinput device, evdev remapping, hwdb rule, HID
+replacement driver, or userspace repeat loop. Single-report buttons use
+relative HID fields so holding a key follows the firmware's native report
+cadence. Sleep keeps its captured press/release pair.
+
+## Build
+
+Install the build dependencies and build the pinned upstream loader and this
+machine-specific object:
 
 ```sh
 sudo apt-get install -y libudev-dev libelf-dev
@@ -59,28 +48,31 @@ sudo apt-get install -y libudev-dev libelf-dev
 ./tools/brightness-hid-bpf-build.sh target/aorus-brightness.bpf.o
 ```
 
-The guarded test attaches temporarily, schedules automatic recovery, and
-verifies the implemented identities while every interface remains on
-`hid-generic`:
-
-```sh
-sudo ./tools/fn-identity-hid-bpf-test.sh --confirm-external-keyboard
-```
-
-After installation, enable persistently from **Hotkeys → Laptop Fn buttons**
-or as the regular desktop user:
+`install.sh` installs the object, loader, exact-match udev rule, and privileged
+helper. Native Fn support is enabled from **Hotkeys → Laptop Fn buttons** or:
 
 ```sh
 aorusctl fn enable
 ```
 
-That command commits the COSMIC mappings before asking the privileged daemon
-to create `/etc/aorus-control/brightness-hid-bpf.enabled` and attach HID-BPF.
-The udev rule restores the attachment after reboot/replug. Disable it with
-`aorusctl fn disable`.
+Mappings are stored in `/etc/aorus-control/fn-buttons.toml`. The daemon
+repairs the attachment and action map after boot, resume, and HID reprobe.
+Disable the path with `aorusctl fn disable`.
 
-The production fixed descriptor SHA-256 is
-`7c69146eea1d52d72015cdcc225e462e7110d4e5f8b26142986231c24a4f8271`.
-The helper also recognizes the retired brightness-only descriptor
-`637f4bd5f31d413593ab1095e97f0567b4456c04e78bdb1268fc641e3e9e1a48`
-solely to detach it safely during upgrade.
+## Guarded hardware test
+
+With an external keyboard connected, run this before enabling a custom
+brightness mapping:
+
+```sh
+sudo ./tools/brightness-hid-bpf-test.sh --confirm-external-keyboard
+```
+
+During the test, tap and hold brightness down and up as prompted. The test
+automatically restores the original HID state and verifies that every keyboard
+interface remains on `hid-generic`.
+
+The current fixed descriptor SHA-256 is
+`b171e2725b8413d9d10e78709c7f3b36e6e72ce8d304307de1ed25ad4aa44908`.
+The helper recognizes older fixed/brightness-only descriptors solely to
+upgrade or detach them safely.

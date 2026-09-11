@@ -8,8 +8,10 @@ enabled=/etc/aorus-control/brightness-hid-bpf.enabled
 object_name=0010-Gigabyte__AERO-16-YE5.bpf
 loaded_object_name=${object_name//[.:]/_}
 descriptor_sha256=8c466c33cedbb3be04738089da3c09d4319443a793b462319708a8f8364be17a
-fixed_descriptor_sha256=7c69146eea1d52d72015cdcc225e462e7110d4e5f8b26142986231c24a4f8271
+fixed_descriptor_sha256=b171e2725b8413d9d10e78709c7f3b36e6e72ce8d304307de1ed25ad4aa44908
+previous_fixed_descriptor_sha256=026ba11fc4b4876f66336568faa1301250d6ba76e9043918b9a209fe926578d5
 legacy_brightness_descriptor_sha256=637f4bd5f31d413593ab1095e97f0567b4456c04e78bdb1268fc641e3e9e1a48
+action_map_name=aorus_fn_act_v2
 
 [[ $mode == add || $mode == test-add || $mode == remove || $mode == recover || $mode == status ]] || exit 2
 
@@ -84,6 +86,7 @@ fi
 descriptor=$(sha256sum "$device/report_descriptor" 2>/dev/null | awk '{print $1}')
 [[ $descriptor == "$descriptor_sha256" ||
    $descriptor == "$fixed_descriptor_sha256" ||
+   $descriptor == "$previous_fixed_descriptor_sha256" ||
    $descriptor == "$legacy_brightness_descriptor_sha256" ]] ||
   status_gate_failure descriptor-mismatch
 
@@ -93,16 +96,24 @@ loaded_production() {
     grep -F "\"name\": \"$loaded_object_name\"" >/dev/null
 }
 
+loaded_action_map() {
+  [[ -n $loader ]] || return 1
+  "$loader" list-loaded --syspath "$device" --format json 2>/dev/null |
+    grep -F "\"name\": \"$action_map_name\"" >/dev/null
+}
+
 verify_attached() {
   local attempt
   for attempt in {1..20}; do
-    if loaded_production && all_target_interfaces_are_generic; then
+    if loaded_production && loaded_action_map && all_target_interfaces_are_generic; then
       return 0
     fi
     sleep 0.05
   done
   loaded_production || printf 'native Fn-key object %s is not pinned for %s\n' \
     "$loaded_object_name" "$device" >&2
+  loaded_action_map || printf 'native Fn-key action map %s is not pinned for %s\n' \
+    "$action_map_name" "$device" >&2
   all_target_interfaces_are_generic || printf '%s\n' \
     'not every GIGABYTE keyboard interface is bound to hid-generic' >&2
   return 1
@@ -122,18 +133,22 @@ all_target_interfaces_are_generic() {
 
 if [[ $mode == status ]]; then
   if [[ $descriptor == "$fixed_descriptor_sha256" ]]; then
-    if loaded_production && all_target_interfaces_are_generic; then
+    if loaded_production && loaded_action_map && all_target_interfaces_are_generic; then
       print_status true "$descriptor" attached
       exit 0
     elif ! loaded_production; then
       reason=production-object-not-listed
+    elif ! loaded_action_map; then
+      reason=production-map-schema-needs-upgrade
     else
       reason=non-generic-sibling
     fi
     print_status false "$descriptor" "$reason"
     exit 1
   fi
-  if [[ $descriptor == "$legacy_brightness_descriptor_sha256" ]]; then
+  if [[ $descriptor == "$previous_fixed_descriptor_sha256" ]]; then
+    reason=previous-production-descriptor-needs-upgrade
+  elif [[ $descriptor == "$legacy_brightness_descriptor_sha256" ]]; then
     reason=legacy-brightness-object-attached
   else
     reason=not-attached
@@ -170,14 +185,40 @@ if [[ $mode == remove ]]; then
   exit 0
 fi
 
+# Upgrade an older production descriptor in place. The previous object must
+# be detached before HID-BPF can install the new descriptor fixup.
+if [[ $descriptor == "$previous_fixed_descriptor_sha256" ]]; then
+  [[ -n $loader ]] && "$loader" remove "$device" >/dev/null 2>&1 || true
+  for _ in {1..40}; do
+    descriptor=$(sha256sum "$device/report_descriptor" 2>/dev/null | awk '{print $1}')
+    [[ $descriptor == "$descriptor_sha256" ]] && break
+    sleep 0.05
+  done
+  [[ $descriptor == "$descriptor_sha256" ]] || status_gate_failure old-descriptor-not-removed
+  all_target_interfaces_are_generic
+fi
+
 [[ -n $loader ]] || {
   logger -t aorus-brightness 'udev-hid-bpf is not installed; native Fn identities remain disabled'
   exit 0
 }
 
 if [[ $descriptor == "$fixed_descriptor_sha256" ]]; then
-  verify_attached
-  exit 0
+  if loaded_production && loaded_action_map; then
+    verify_attached
+    exit 0
+  fi
+  # The object name stays stable across schema upgrades. Detach an older
+  # object with the same descriptor before loading the new map ABI.
+  [[ -n $loader ]] || status_gate_failure loader-missing-for-map-upgrade
+  "$loader" remove "$device" >/dev/null 2>&1 || true
+  for _ in {1..40}; do
+    descriptor=$(sha256sum "$device/report_descriptor" 2>/dev/null | awk '{print $1}')
+    [[ $descriptor == "$descriptor_sha256" ]] && break
+    sleep 0.05
+  done
+  [[ $descriptor == "$descriptor_sha256" ]] || status_gate_failure old-map-object-not-removed
+  all_target_interfaces_are_generic
 fi
 
 [[ $mode == test-add || -e $enabled ]] || exit 0
@@ -198,9 +239,16 @@ if [[ $descriptor == "$legacy_brightness_descriptor_sha256" ]]; then
 fi
 
 [[ $descriptor == "$descriptor_sha256" ]]
+if loaded_production; then
+  verify_attached
+  exit 0
+fi
 if [[ $mode == test-add ]]; then
   "$loader" --debug --verbose add "$device" "$object"
 else
-  "$loader" add "$device" "$object"
+  if ! loader_output=$("$loader" --debug --verbose add "$device" "$object" 2>&1); then
+    printf '%s\n' "$loader_output" >&2
+    exit 1
+  fi
 fi
 verify_attached

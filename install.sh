@@ -28,9 +28,8 @@ for file in \
   70-aorus-brightness-hid-bpf.rules; do
   [[ -f $root_dir/packaging/$file ]] || die "missing packaging/$file"
 done
-[[ -f $root_dir/tools/fn-identity-hid-bpf-test.sh ]] \
-  || die 'missing tools/fn-identity-hid-bpf-test.sh'
 [[ -f $root_dir/tools/fn-buttons-capture.sh ]] \
+  || [[ -n $destdir ]] \
   || die 'missing tools/fn-buttons-capture.sh'
 
 config_dir=$destdir/etc/aorus-control
@@ -72,10 +71,10 @@ install -D -m 0644 "$root_dir/packaging/io.github.aoruslinux.Control.Autostart.d
   "$destdir/etc/xdg/autostart/io.github.aoruslinux.Control.desktop"
 install -D -m 0644 "$root_dir/packaging/io.github.aoruslinux.Control.svg" \
   "$destdir/usr/share/icons/hicolor/scalable/apps/io.github.aoruslinux.Control.svg"
-install -D -m 0755 "$root_dir/tools/fn-identity-hid-bpf-test.sh" \
-  "$destdir/usr/local/libexec/aorus-control-fn-identity-test"
-install -D -m 0755 "$root_dir/tools/fn-buttons-capture.sh" \
-  "$destdir/usr/local/libexec/aorus-control-fn-buttons-capture"
+if [[ -f $root_dir/tools/fn-buttons-capture.sh ]]; then
+  install -D -m 0755 "$root_dir/tools/fn-buttons-capture.sh" \
+    "$destdir/usr/local/libexec/aorus-control-fn-buttons-capture"
+fi
 install -D -m 0755 "$root_dir/packaging/aorus-brightness-hid-bpf" \
   "$destdir/usr/local/libexec/aorus-brightness-hid-bpf"
 install -D -m 0644 "$root_dir/packaging/70-aorus-brightness-hid-bpf.rules" \

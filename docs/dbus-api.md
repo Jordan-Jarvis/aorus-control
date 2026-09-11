@@ -13,6 +13,7 @@ This is the integration contract between `aorusd`, `aorusctl`, and the native UI
 | --- | --- | --- |
 | `GetStatus` | none | `a{sv}` |
 | `GetProfileMappings` | none | `a{sy}` mapping normalized power-profile names to fan-mode values |
+| `GetFnButtonMappings` | none | `a{ss}` mapping stable physical-button IDs to action IDs |
 | `GetFanCurve` | none | `a(yy)` containing exactly 15 `(temperature, raw_speed)` pairs when available |
 | `CaptureFanCurve` | none | captures, validates, stores, and returns the current 15 firmware points without selecting Custom or changing the active fan profile |
 | `SetPowerProfile` | `s` (`performance`, `balanced`, or `battery`) | none |
@@ -24,12 +25,27 @@ This is the integration contract between `aorusd`, `aorusctl`, and the native UI
 | `SetChargeLimit` | `y` | none |
 | `SetGpuBoost` | `y` | none |
 | `SetNativeFnKeysEnabled` | `b` | enables/disables the exact-model HID-BPF translation and its persistent udev marker |
+| `SetFnButtonMappings` | `a{ss}` | validates, stores, and immediately applies the native HID-BPF action map |
 
 Selecting or reapplying Custom always rewrites and verifies the stored 15-point
 curve before activating Custom. The daemon never merely selects Custom after a
 firmware reset or an unverified rollback. An unverified rollback disables the
 stored Custom curve and resets Custom mappings to conservative firmware
 profiles.
+
+Physical Fn mappings are stored in `/etc/aorus-control/fn-buttons.toml`.
+Seven capture-proven vendor reports are translated to native HID usages and
+mapped to standard Linux input actions or reserved F13–F22 identities consumed
+by `aorusd`. The daemon reapplies both the HID-BPF attachment and action map after
+resume, device reprobe, and watchdog-detected loss. Display and touchpad lock
+retain their firmware-native actions and reject non-default mappings.
+
+## Signals
+
+| Member | Payload | Meaning |
+| --- | --- | --- |
+| `OpenRequested` | none | an Fn button mapped to `open-app` was pressed; running desktop UI instances show and focus their window |
+| `ProfileChanged` | `(ss)` | the daemon applied a power/fan profile; the first field is the normalized power profile when available, and the second is the selected fan profile |
 
 Every mutation requires polkit action
 `io.github.aoruslinux.control.modify`. The daemon is write-enabled by default;
@@ -58,7 +74,11 @@ Keys may be added compatibly. Missing/unsupported readings are omitted rather th
 | `custom_curve_available` | `b` | a validated custom curve is stored and may be selected/mapped |
 | `native_fn_keys_supported` | `b` | the exact DMI/HID-gated native translation is installed for this laptop |
 | `native_fn_keys_enabled` | `b` | persistent loading is enabled |
-| `native_fn_keys_active` | `b` | the production translation is attached to every matching interface |
+| `native_fn_keys_active` | `b` | the production translation is attached and the native HID-BPF action map matches the stored configuration |
+| `native_fn_keys_map_loaded` | `b` | the pinned native HID-BPF action map is present |
+| `native_fn_keys_attached` | `b` | the exact production HID-BPF object and action map are attached |
+| `native_fn_keys_map_generation` | `u` | monotonically advancing action-map generation, omitted when the map is unavailable |
+| `native_fn_keys_reader_ready` | `b` | a stable translated private-action input node is present for daemon-owned actions |
 | `product_name` / `product_version` | `s` | DMI product identity |
 | `bios_version` / `bios_date` | `s` | DMI firmware identity |
 | `kernel_release` | `s` | running kernel release |

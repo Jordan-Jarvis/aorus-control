@@ -10,12 +10,6 @@ root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 source_file="$root/brightness/hid-bpf/0010-Gigabyte__AERO-16-YE5.bpf.c"
 source_commit=899cae5d423d1bde12f204edbf24a7bc7b22434d
 udev_hid_bpf=${UDEV_HID_BPF_SOURCE:-"$root/target/udev-hid-bpf"}
-# Keep the old prototype switch as a compatibility alias. The production
-# object now contains the capture-proven Fn identities.
-if [[ ${1:-} == --fn-prototype ]]; then
-  printf 'brightness-hid-bpf-build: --fn-prototype is deprecated; building the production identity object\n' >&2
-  shift
-fi
 output=${1:-"$root/target/aorus-brightness.bpf.o"}
 
 command -v clang >/dev/null || die 'clang is required'

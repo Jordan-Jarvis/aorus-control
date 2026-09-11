@@ -84,11 +84,16 @@ impl DesktopLifecycle {
             event_tx: self.event_tx.clone(),
             ctx,
         };
-        tray.assume_sni_available(true).spawn().map(TrayHandle)
+        tray.assume_sni_available(true)
+            .spawn()
+            .map(|handle| TrayHandle { _handle: handle })
     }
 }
 
-pub struct TrayHandle(#[allow(dead_code)] Handle<AorusTray>);
+pub struct TrayHandle {
+    // Keeping the handle alive keeps the tray registration alive.
+    _handle: Handle<AorusTray>,
+}
 
 struct AorusTray {
     event_tx: Sender<Event>,

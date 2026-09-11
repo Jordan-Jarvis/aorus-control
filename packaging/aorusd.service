@@ -13,6 +13,7 @@ ExecStart=/usr/local/libexec/aorusd
 Restart=on-failure
 RestartSec=2s
 Environment=AORUS_CONTROL_CONFIG=/etc/aorus-control/config.toml
+Environment=AORUS_CONTROL_FN_CONFIG=/etc/aorus-control/fn-buttons.toml
 ConfigurationDirectory=aorus-control
 ConfigurationDirectoryMode=0700
 UMask=0077
@@ -23,6 +24,11 @@ ProtectSystem=full
 ReadWritePaths=/etc/aorus-control
 RestrictAddressFamilies=AF_UNIX
 NoNewPrivileges=true
+# HID-BPF attachment is a privileged kernel operation. Keep the daemon
+# otherwise capability-minimal while allowing the loader to create and pin
+# the exact-model HID program and its action map.
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_SYS_ADMIN
+AmbientCapabilities=CAP_BPF CAP_PERFMON CAP_SYS_ADMIN
 LockPersonality=true
 RestrictRealtime=true
 SystemCallArchitectures=native

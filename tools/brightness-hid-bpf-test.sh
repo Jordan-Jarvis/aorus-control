@@ -93,7 +93,7 @@ import sys
 
 target = pathlib.Path(sys.argv[1])
 word_bits = 64
-required = (183, 184)
+required = (224, 225)  # KEY_BRIGHTNESSDOWN, KEY_BRIGHTNESSUP
 for path in target.glob("input/input*/event*"):
     words = (path.parent / "capabilities/key").read_text().split()
     values = [int(word, 16) for word in reversed(words)]
@@ -119,10 +119,10 @@ for pid in "${pids[@]}"; do
 done
 set -e
 
-down=$(grep -h 'KEY_F13.*value 1' "$log"/*.log | wc -l || true)
-up=$(grep -h 'KEY_F14.*value 1' "$log"/*.log | wc -l || true)
-printf 'Native identity events: F13=%s F14=%s\n' "$down" "$up"
-((down >= 2 && up >= 2)) || die "native press/hold validation failed; event log: $log"
+down=$(grep -h 'KEY_BRIGHTNESSDOWN.*value 1' "$log"/*.log | wc -l || true)
+up=$(grep -h 'KEY_BRIGHTNESSUP.*value 1' "$log"/*.log | wc -l || true)
+printf 'Native brightness events: down=%s up=%s\n' "$down" "$up"
+((down >= 2 && up >= 2)) || die "native brightness press/hold validation failed; event log: $log"
 
 printf 'Guarded native brightness test passed. HID-BPF will now be detached.\n'
 printf 'After installing AORUS Control, enable the production path in the app or with: aorusctl fn enable\n'

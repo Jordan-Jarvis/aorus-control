@@ -3,12 +3,14 @@ name: check
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
   rust:
+    name: Rust and packaging checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5

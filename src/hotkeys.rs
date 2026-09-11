@@ -9,7 +9,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::fn_buttons::{FnAction, FnButtonError, FnButtonMappings, PhysicalButtonId};
 use ron::value::RawValue;
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
@@ -20,7 +19,6 @@ use serde::{
 pub const COSMIC_SHORTCUTS_ID: &str = "com.system76.CosmicSettings.Shortcuts";
 const OWNER: &str = "AORUS Control: ";
 const FN_OWNER: &str = "AORUS Control: fn-button:";
-const RETIRED_AIRPLANE_DESCRIPTION: &str = "AORUS Control: fn-button:airplane-mode";
 const DEFAULTS: &str = "/usr/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults";
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -163,69 +161,6 @@ impl HotkeyAction {
     }
 }
 
-fn fn_button_description(button: PhysicalButtonId) -> String {
-    format!("{FN_OWNER}{}", button.id())
-}
-
-fn fn_button_from_description(value: &str) -> Result<PhysicalButtonId, HotkeyError> {
-    let id = value
-        .strip_prefix(FN_OWNER)
-        .ok_or_else(|| HotkeyError::Parse("not an AORUS Fn-button entry".to_owned()))?;
-    PhysicalButtonId::from_id(id).ok_or_else(|| HotkeyError::FnButtonModified(id.to_owned()))
-}
-
-fn fn_action_ron(action: FnAction) -> Option<&'static str> {
-    match action {
-        FnAction::Disabled => None,
-        FnAction::BrightnessDown => Some("System(BrightnessDown)"),
-        FnAction::BrightnessUp => Some("System(BrightnessUp)"),
-        FnAction::PowerBattery => Some("Spawn(\"/usr/local/bin/aorusctl profile battery\")"),
-        FnAction::PowerBalanced => Some("Spawn(\"/usr/local/bin/aorusctl profile balanced\")"),
-        FnAction::PowerPerformance => {
-            Some("Spawn(\"/usr/local/bin/aorusctl profile performance\")")
-        }
-        // Cycling the desktop power profile lets aorusd select the
-        // corresponding mapped firmware profile.
-        FnAction::CyclePowerProfile => Some("Spawn(\"/usr/local/bin/aorusctl profile cycle\")"),
-        FnAction::FanNormal => Some("Spawn(\"/usr/local/bin/aorusctl fan normal\")"),
-        FnAction::FanSilent => Some("Spawn(\"/usr/local/bin/aorusctl fan silent\")"),
-        FnAction::FanGaming => Some("Spawn(\"/usr/local/bin/aorusctl fan gaming\")"),
-        FnAction::FanCustom => Some("Spawn(\"/usr/local/bin/aorusctl fan custom\")"),
-        FnAction::FanReapply => Some("Spawn(\"/usr/local/bin/aorusctl fan reapply\")"),
-        FnAction::Suspend => Some("System(Suspend)"),
-        FnAction::WifiToggle => Some("Spawn(\"/usr/local/bin/aorusctl radio wifi-toggle\")"),
-        FnAction::DisplayToggle => Some("System(DisplayToggle)"),
-        FnAction::TouchpadToggle => Some("System(TouchpadToggle)"),
-        FnAction::AirplaneToggle => {
-            Some("Spawn(\"/usr/local/bin/aorusctl radio airplane-toggle\")")
-        }
-        FnAction::Screenshot => Some("System(Screenshot)"),
-        FnAction::VolumeDown => Some("System(VolumeLower)"),
-        FnAction::VolumeUp => Some("System(VolumeRaise)"),
-        FnAction::VolumeMute => Some("System(Mute)"),
-        FnAction::MediaPlayPause => Some("System(PlayPause)"),
-        FnAction::OpenApp => Some("Spawn(\"/usr/local/bin/aorus-control\")"),
-    }
-}
-
-fn fn_action_from_ron(value: &RawValue) -> Result<FnAction, HotkeyError> {
-    let configured = value
-        .into_rust::<ConfiguredAction>()
-        .map_err(|error| HotkeyError::Parse(error.to_string()))?;
-    FnAction::ALL
-        .into_iter()
-        .find(|action| {
-            fn_action_ron(*action).is_some_and(|ron| {
-                ron::Options::default()
-                    .with_default_extension(ron::extensions::Extensions::IMPLICIT_SOME)
-                    .from_str::<ConfiguredAction>(ron)
-                    .ok()
-                    .is_some_and(|expected| expected == configured)
-            })
-        })
-        .ok_or_else(|| HotkeyError::Parse("unsupported physical Fn-button action".to_owned()))
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HotkeyMapping {
     pub action: HotkeyAction,
@@ -243,7 +178,6 @@ pub enum HotkeyError {
     Duplicate(HotkeyAction),
     Modified(HotkeyAction),
     OwnedShortcutModified(String),
-    FnButtonModified(String),
     Readback,
     Rollback(String),
 }
@@ -267,10 +201,6 @@ impl fmt::Display for HotkeyError {
                 f,
                 "the saved AORUS-owned shortcut {description:?} was modified outside AORUS Control"
             ),
-            Self::FnButtonModified(button) => write!(
-                f,
-                "the saved physical Fn-button mapping for {button} was modified outside AORUS Control"
-            ),
             Self::Readback => {
                 f.write_str("COSMIC shortcut readback did not match the saved values")
             }
@@ -291,10 +221,6 @@ enum ConfiguredAction {
 enum SystemAction {
     BrightnessDown,
     BrightnessUp,
-    Suspend,
-    DisplayToggle,
-    TouchpadToggle,
-    Screenshot,
     VolumeLower,
     VolumeRaise,
     Mute,
@@ -401,8 +327,8 @@ fn mappings_from(shortcuts: &Shortcuts) -> Result<Vec<HotkeyMapping>, HotkeyErro
         let Some(description) = binding.description.as_deref() else {
             continue;
         };
-        // Physical Fn-button entries have their own typed namespace and are
-        // validated by `validate_fn_shortcuts`, not as conventional actions.
+        // Ignore physical Fn-button entries left by older COSMIC-only builds.
+        // They are removed separately after the native HID translation loads.
         if description.starts_with(FN_OWNER) {
             continue;
         }
@@ -492,189 +418,33 @@ pub fn save_mappings_to(
     Ok(())
 }
 
-/// Load the typed physical Fn-button choices after checking the AORUS-owned
-/// COSMIC entries that are present. The per-user Fn-button file is the source
-/// of the choices; COSMIC is checked so an edit made outside this application
-/// is never silently accepted.
-pub fn load_fn_button_mappings() -> Result<FnButtonMappings, String> {
-    let fn_path = fn_button_config_path().map_err(|error| error.to_string())?;
-    let mappings = crate::fn_buttons::load_mappings().map_err(|error| error.to_string())?;
-    // The typed file remains useful for inspection and editing outside a
-    // COSMIC session. There is no compositor file to validate until the
-    // session backend is available; saving still requires COSMIC.
+/// Remove physical Fn-button records created by older COSMIC-only releases.
+/// Physical mappings are now system-wide native input mappings; conventional
+/// user shortcuts remain untouched.
+pub fn remove_legacy_fn_button_shortcuts() -> Result<(), String> {
     if backend_available().is_err() {
-        return Ok(mappings);
+        return Ok(());
     }
-    let custom_path = config_path().map_err(|error| error.to_string())?;
-    let defaults_path = Path::new(DEFAULTS);
-    let custom = read(&custom_path).map_err(|error| error.to_string())?;
-    let defaults = read(defaults_path).map_err(|error| error.to_string())?;
-    mappings_from(&custom).map_err(|error| error.to_string())?;
-    validate_fn_shortcuts(&custom, &defaults, &mappings, fn_path.exists())
-        .map_err(|error| error.to_string())?;
-    Ok(mappings)
-}
-
-/// Load the user's mappings and install compiled defaults on first launch.
-/// This makes an autostarted, hidden app sufficient to prepare COSMIC before
-/// the privileged native HID translation is enabled.
-pub fn load_or_install_fn_button_mappings() -> Result<FnButtonMappings, String> {
-    let fn_path = fn_button_config_path().map_err(|error| error.to_string())?;
-    let mappings = load_fn_button_mappings()?;
-    let backend = backend_available().is_ok();
-    let needs_trigger_migration = if backend {
-        let custom = read(&config_path().map_err(|error| error.to_string())?)
-            .map_err(|error| error.to_string())?;
-        fn_shortcuts(&custom)
-            .map_err(|error| error.to_string())?
-            .iter()
-            .any(|entry| entry.binding != entry.button.trigger())
-    } else {
-        false
-    };
-    if backend && (!fn_path.exists() || needs_trigger_migration) {
-        save_fn_button_mappings(&mappings)?;
-    }
-    Ok(mappings)
-}
-
-/// Save typed physical Fn-button choices and their derived native COSMIC
-/// entries as one transaction. The COSMIC file is committed first and read
-/// back; the typed Fn-button file is committed only after that succeeds.
-/// Failure of the second commit restores the exact previous COSMIC file.
-pub fn save_fn_button_mappings(mappings: &FnButtonMappings) -> Result<(), String> {
-    backend_available()?;
-    let fn_path = fn_button_config_path().map_err(|error| error.to_string())?;
-    save_fn_button_mappings_to(
-        config_path().map_err(|error| error.to_string())?,
-        DEFAULTS,
-        fn_path,
-        mappings,
-    )
-    .map_err(|error| error.to_string())
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct FnShortcut {
-    button: PhysicalButtonId,
-    action: FnAction,
-    binding: String,
-}
-
-fn save_fn_button_mappings_to(
-    path: impl AsRef<Path>,
-    defaults_path: impl AsRef<Path>,
-    fn_path: impl AsRef<Path>,
-    mappings: &FnButtonMappings,
-) -> Result<(), HotkeyError> {
-    let path = path.as_ref();
-    let defaults_path = defaults_path.as_ref();
-    let fn_path = fn_path.as_ref();
-    let original = match fs::read(path) {
-        Ok(contents) => Some(contents),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-        Err(error) => return Err(HotkeyError::Io("read", path.to_owned(), error)),
-    };
-    let original_fn = match fs::read(fn_path) {
-        Ok(contents) => Some(contents),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-        Err(error) => return Err(HotkeyError::Io("read", fn_path.to_owned(), error)),
-    };
-    let custom = read(path)?;
-    let defaults = read(defaults_path)?;
-    let prior_conventional = mappings_from(&custom)?;
-
-    // Validate the entries against the last typed choices, not the choices
-    // being written. This permits an intentional user change while still
-    // detecting a compositor-file edit made behind our back.
-    let prior = fn_buttons_load_from(fn_path)?.unwrap_or_default();
-    let require_complete = fn_path.exists();
-    validate_fn_shortcuts(&custom, &defaults, &prior, require_complete)?;
-
-    let mut next = custom;
-    next.0.retain(|(binding, _)| {
+    let path = config_path().map_err(|error| error.to_string())?;
+    let mut shortcuts = read(&path).map_err(|error| error.to_string())?;
+    let before = shortcuts.0.len();
+    shortcuts.0.retain(|(binding, _)| {
         !binding
             .description
             .as_deref()
             .is_some_and(|description| description.starts_with(FN_OWNER))
     });
-
-    for (button, action) in mappings.iter() {
-        let Some(action_ron) = fn_action_ron(action) else {
-            continue;
-        };
-        let mut binding = parse_binding(button.trigger(), None)?;
-        binding.description = Some(fn_button_description(button));
-
-        if next.0.iter().any(|(existing, _)| existing == &binding)
-            || defaults.0.iter().any(|(existing, _)| existing == &binding)
-        {
-            return Err(HotkeyError::Conflict(button.trigger().to_owned()));
-        }
-        let action = RawValue::from_boxed_ron(action_ron.into())
-            .map_err(|error| HotkeyError::Parse(error.to_string()))?;
-        next.0.push((binding, action));
+    if shortcuts.0.len() == before {
+        return Ok(());
     }
-
-    let output = serialize_shortcuts(&next)?;
-
-    if let Err(error) = write_atomic(path, &(output + "\n")) {
-        return Err(rollback_files(
-            path,
-            original.as_deref(),
-            fn_path,
-            original_fn.as_deref(),
-            error,
-        ));
-    }
-
-    let cosmic_result = (|| {
-        let saved = read(path)?;
-        if mappings_from(&saved)? != prior_conventional {
-            return Err(HotkeyError::Readback);
-        }
-        validate_fn_shortcuts(&saved, &defaults, mappings, true)
-    })();
-    if let Err(error) = cosmic_result {
-        return Err(rollback_file(path, original.as_deref(), error));
-    }
-
-    if let Err(error) = crate::fn_buttons::save_mappings_to(fn_path, mappings) {
-        let error = fn_button_error(error);
-        return Err(rollback_files(
-            path,
-            original.as_deref(),
-            fn_path,
-            original_fn.as_deref(),
-            error,
-        ));
-    }
-    Ok(())
+    let text = serialize_shortcuts(&shortcuts).map_err(|error| error.to_string())? + "\n";
+    write_atomic(&path, &text).map_err(|error| error.to_string())
 }
 
 fn rollback_file(path: &Path, original: Option<&[u8]>, error: HotkeyError) -> HotkeyError {
     match restore_file(path, original) {
         Ok(()) => error,
         Err(rollback) => HotkeyError::Rollback(format!("{error}; {rollback}")),
-    }
-}
-
-fn rollback_files(
-    cosmic_path: &Path,
-    cosmic_original: Option<&[u8]>,
-    fn_path: &Path,
-    fn_original: Option<&[u8]>,
-    error: HotkeyError,
-) -> HotkeyError {
-    let cosmic_rollback = restore_file(cosmic_path, cosmic_original);
-    let fn_rollback = restore_file(fn_path, fn_original);
-    match (cosmic_rollback, fn_rollback) {
-        (Ok(()), Ok(())) => error,
-        (Err(cosmic), Ok(())) => HotkeyError::Rollback(format!("{error}; {cosmic}")),
-        (Ok(()), Err(fn_error)) => HotkeyError::Rollback(format!("{error}; {fn_error}")),
-        (Err(cosmic), Err(fn_error)) => {
-            HotkeyError::Rollback(format!("{error}; {cosmic}; {fn_error}"))
-        }
     }
 }
 
@@ -698,111 +468,6 @@ fn sync_parent(path: &Path) -> Result<(), HotkeyError> {
     fs::File::open(parent)
         .and_then(|directory| directory.sync_all())
         .map_err(|error| HotkeyError::Io("sync directory", parent.to_owned(), error))
-}
-
-fn fn_buttons_load_from(path: &Path) -> Result<Option<FnButtonMappings>, HotkeyError> {
-    match fs::metadata(path) {
-        Ok(_) => crate::fn_buttons::load_mappings_from(path)
-            .map(Some)
-            .map_err(fn_button_error),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(HotkeyError::Io("read", path.to_owned(), error)),
-    }
-}
-
-fn fn_button_error(error: FnButtonError) -> HotkeyError {
-    HotkeyError::Parse(error.to_string())
-}
-
-fn validate_fn_shortcuts(
-    custom: &Shortcuts,
-    defaults: &Shortcuts,
-    mappings: &FnButtonMappings,
-    require_complete: bool,
-) -> Result<(), HotkeyError> {
-    let entries = fn_shortcuts(custom)?;
-    let mut seen = HashSet::new();
-    for entry in &entries {
-        if !seen.insert(entry.button) {
-            return Err(HotkeyError::FnButtonModified(entry.button.id().to_owned()));
-        }
-        let expected = parse_binding(&entry.binding, None)?;
-        if custom
-            .0
-            .iter()
-            .filter(|(binding, _)| binding == &expected)
-            .count()
-            > 1
-        {
-            return Err(HotkeyError::Conflict(entry.binding.clone()));
-        }
-        let expected_trigger = entry.binding == entry.button.trigger()
-            || entry.button.legacy_trigger() == Some(entry.binding.as_str());
-        if mappings.get(entry.button) != entry.action
-            || !expected_trigger
-            || entry.action == FnAction::Disabled
-        {
-            return Err(HotkeyError::FnButtonModified(entry.button.id().to_owned()));
-        }
-    }
-
-    if require_complete {
-        for (button, action) in mappings.iter() {
-            let found = entries.iter().any(|entry| entry.button == button);
-            if (action == FnAction::Disabled) == found {
-                return Err(HotkeyError::FnButtonModified(button.id().to_owned()));
-            }
-            if !found {
-                let trigger = parse_binding(button.trigger(), None)?;
-                if custom.0.iter().any(|(binding, _)| binding == &trigger) {
-                    return Err(HotkeyError::FnButtonModified(button.id().to_owned()));
-                }
-            }
-        }
-    }
-
-    // Defaults are checked here as well as during a save so callers get a
-    // deterministic conflict result even when a default entry is added after
-    // a mapping was first written.
-    for entry in &entries {
-        let expected = parse_binding(entry.button.trigger(), None)?;
-        if defaults.0.iter().any(|(binding, _)| binding == &expected) {
-            return Err(HotkeyError::Conflict(entry.button.trigger().to_owned()));
-        }
-    }
-    Ok(())
-}
-
-fn fn_shortcuts(shortcuts: &Shortcuts) -> Result<Vec<FnShortcut>, HotkeyError> {
-    let mut entries = Vec::new();
-    for (binding, value) in &shortcuts.0 {
-        let Some(description) = binding.description.as_deref() else {
-            continue;
-        };
-        if !description.starts_with(FN_OWNER) {
-            continue;
-        }
-        if description == RETIRED_AIRPLANE_DESCRIPTION {
-            fn_action_from_ron(value)?;
-            let binding_text = binding_string(binding)?;
-            if binding_text != "F21" {
-                return Err(HotkeyError::FnButtonModified("airplane-mode".to_owned()));
-            }
-            // Early builds managed F21 even though the laptop already emits
-            // a native Linux airplane key. Accept the retired owned record so
-            // the next save can remove it; never derive a replacement.
-            continue;
-        }
-        let button = fn_button_from_description(description)?;
-        let action = fn_action_from_ron(value)?;
-        let binding_text = binding_string(binding)?;
-        entries.push(FnShortcut {
-            button,
-            action,
-            binding: binding_text,
-        });
-    }
-    Ok(entries)
 }
 
 pub fn normalize_binding(input: &str) -> Result<String, HotkeyError> {
@@ -1041,18 +706,6 @@ fn config_path() -> Result<PathBuf, HotkeyError> {
         .join("v1/custom"))
 }
 
-fn fn_button_config_path() -> Result<PathBuf, HotkeyError> {
-    let root = env::var_os("XDG_CONFIG_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            env::var_os("HOME")
-                .filter(|value| !value.is_empty())
-                .map(|home| PathBuf::from(home).join(".config"))
-        })
-        .ok_or(HotkeyError::ConfigHome)?;
-    Ok(root.join("aorus-control/fn-buttons.toml"))
-}
 fn write_atomic(path: &Path, text: &str) -> Result<(), HotkeyError> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)
@@ -1245,277 +898,6 @@ mod tests {
             save_mappings_to(&custom, &defaults, &[mapping(HotkeyAction::OpenApp, "Ctrl+F9")]),
             Err(HotkeyError::Conflict(binding)) if binding == "Ctrl+F9"
         ));
-        assert_eq!(fs::read_to_string(&custom).unwrap(), original);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    fn fn_paths() -> (PathBuf, PathBuf, PathBuf, PathBuf) {
-        let root = env::temp_dir().join(format!(
-            "aorus-fn-hotkeys-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        (
-            root.join("custom"),
-            root.join("defaults"),
-            root.join("fn-buttons.toml"),
-            root,
-        )
-    }
-
-    fn write_empty_defaults(defaults: &Path) {
-        fs::write(defaults, "{}").unwrap();
-    }
-
-    #[test]
-    fn physical_defaults_preserve_conventional_and_unrelated_entries() {
-        let (custom, defaults, fn_path, root) = fn_paths();
-        fs::create_dir_all(&root).unwrap();
-        fs::write(
-            &custom,
-            "{(modifiers:[Super],key:\"q\"):Close,(modifiers:[Ctrl],key:\"F9\",description:Some(\"AORUS Control: open-app\")):Spawn(\"/usr/local/bin/aorus-control\")}",
-        )
-        .unwrap();
-        fs::write(
-            &defaults,
-            "{(modifiers:[Super],key:\"Escape\"):System(LockScreen)}",
-        )
-        .unwrap();
-
-        save_fn_button_mappings_to(&custom, &defaults, &fn_path, &FnButtonMappings::default())
-            .unwrap();
-        let saved = read(&custom).unwrap();
-        assert!(saved.0.iter().any(|(binding, _)| {
-            binding.key.as_deref() == Some("q") && binding.description.is_none()
-        }));
-        assert!(saved.0.iter().any(|(binding, _)| {
-            binding.key.as_deref() == Some("F9")
-                && binding.description.as_deref() == Some("AORUS Control: open-app")
-        }));
-        assert_eq!(
-            fn_shortcuts(&saved).unwrap().len(),
-            PhysicalButtonId::ALL.len()
-        );
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn physical_buttons_may_share_one_action() {
-        let (custom, defaults, fn_path, root) = fn_paths();
-        fs::create_dir_all(&root).unwrap();
-        fs::write(&custom, "{}").unwrap();
-        write_empty_defaults(&defaults);
-        let mut mappings = FnButtonMappings::default();
-        mappings.set(PhysicalButtonId::SquareX, FnAction::Screenshot);
-        mappings.set(PhysicalButtonId::Ai, FnAction::Screenshot);
-        save_fn_button_mappings_to(&custom, &defaults, &fn_path, &mappings).unwrap();
-        let screenshots = fn_shortcuts(&read(&custom).unwrap())
-            .unwrap()
-            .into_iter()
-            .filter(|entry| entry.action == FnAction::Screenshot)
-            .count();
-        assert_eq!(screenshots, 2);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn exact_legacy_airplane_entry_is_removed_on_next_save() {
-        let (custom, defaults, fn_path, root) = fn_paths();
-        fs::create_dir_all(&root).unwrap();
-        fs::write(
-            &custom,
-            "{(modifiers:[],key:\"F21\",description:Some(\"AORUS Control: fn-button:airplane-mode\")):System(Screenshot)}",
-        )
-        .unwrap();
-        write_empty_defaults(&defaults);
-        save_fn_button_mappings_to(&custom, &defaults, &fn_path, &FnButtonMappings::default())
-            .unwrap();
-        let saved = fs::read_to_string(&custom).unwrap();
-        assert!(!saved.contains("airplane-mode"));
-        assert!(!saved.contains("key: \"F21\""));
-        assert_eq!(
-            fn_shortcuts(&read(&custom).unwrap()).unwrap().len(),
-            PhysicalButtonId::ALL.len()
-        );
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn development_display_and_touchpad_triggers_migrate_on_save() {
-        let (custom, defaults, fn_path, root) = fn_paths();
-        fs::create_dir_all(&root).unwrap();
-        fs::write(
-            &custom,
-            "{(modifiers:[],key:\"F18\",description:Some(\"AORUS Control: fn-button:display\")):System(DisplayToggle),(modifiers:[],key:\"F20\",description:Some(\"AORUS Control: fn-button:touchpad-lock\")):System(TouchpadToggle)}",
-        )
-        .unwrap();
-        write_empty_defaults(&defaults);
-        let mappings = FnButtonMappings::default();
-        save_fn_button_mappings_to(&custom, &defaults, &fn_path, &mappings).unwrap();
-        let saved = fs::read_to_string(&custom).unwrap();
-        assert!(saved.contains("key: \"p\""));
-        assert!(saved.contains("key: \"F24\""));
-        assert!(!saved.contains("key: \"F18\""));
-        assert!(!saved.contains("key: \"F20\""));
-        assert!(!saved.contains("Some("));
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn raw_f_key_triggers_migrate_to_their_xkb_keysyms() {
-        let (custom, defaults, fn_path, root) = fn_paths();
-        fs::create_dir_all(&root).unwrap();
-        fs::write(
-            &custom,
-            "{(modifiers:[],key:\"F13\",description:Some(\"AORUS Control: fn-button:brightness-down\")):System(BrightnessDown),(modifiers:[],key:\"F14\",description:Some(\"AORUS Control: fn-button:brightness-up\")):System(BrightnessUp),(modifiers:[],key:\"F15\",description:Some(\"AORUS Control: fn-button:fan\")):Spawn(\"/usr/local/bin/aorusctl profile cycle\"),(modifiers:[],key:\"F16\",description:Some(\"AORUS Control: fn-button:sleep\")):System(Suspend),(modifiers:[],key:\"F17\",description:Some(\"AORUS Control: fn-button:wifi\")):Spawn(\"/usr/local/bin/aorusctl radio wifi-toggle\")}",
-        )
-        .unwrap();
-        write_empty_defaults(&defaults);
-
-        save_fn_button_mappings_to(&custom, &defaults, &fn_path, &FnButtonMappings::default())
-            .unwrap();
-
-        let saved = fs::read_to_string(&custom).unwrap();
-        for key in [
-            "XF86Tools",
-            "XF86Launch5",
-            "XF86Launch6",
-            "XF86Launch7",
-            "XF86Launch8",
-        ] {
-            assert!(saved.contains(&format!("key: \"{key}\"")));
-        }
-        for key in ["F13", "F14", "F15", "F16", "F17"] {
-            assert!(!saved.contains(&format!("key: \"{key}\"")));
-        }
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn physical_trigger_conflicts_with_cosmic_default() {
-        let (custom, defaults, fn_path, root) = fn_paths();
-        fs::create_dir_all(&root).unwrap();
-        let original = "{}";
-        fs::write(&custom, original).unwrap();
-        fs::write(&defaults, "{(modifiers:[],key:\"XF86Launch6\"):Close}").unwrap();
-        assert!(matches!(
-            save_fn_button_mappings_to(
-                &custom,
-                &defaults,
-                &fn_path,
-                &FnButtonMappings::default()
-            ),
-            Err(HotkeyError::Conflict(trigger)) if trigger == "XF86Launch6"
-        ));
-        assert_eq!(fs::read_to_string(&custom).unwrap(), original);
-        assert!(!fn_path.exists());
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn physical_trigger_conflicts_with_custom_shortcut() {
-        let (custom, defaults, fn_path, root) = fn_paths();
-        fs::create_dir_all(&root).unwrap();
-        let original = "{(modifiers:[],key:\"XF86Tools\"):Close}";
-        fs::write(&custom, original).unwrap();
-        write_empty_defaults(&defaults);
-        assert!(matches!(
-            save_fn_button_mappings_to(
-                &custom,
-                &defaults,
-                &fn_path,
-                &FnButtonMappings::default()
-            ),
-            Err(HotkeyError::Conflict(trigger)) if trigger == "XF86Tools"
-        ));
-        assert_eq!(fs::read_to_string(&custom).unwrap(), original);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn physical_trigger_conflicts_with_unrelated_duplicate_entry() {
-        let (custom, defaults, fn_path, root) = fn_paths();
-        fs::create_dir_all(&root).unwrap();
-        fs::write(
-            &custom,
-            "{(modifiers:[],key:\"XF86Tools\"):Close,(modifiers:[],key:\"XF86Tools\",description:Some(\"AORUS Control: fn-button:brightness-down\")):System(BrightnessDown)}",
-        )
-        .unwrap();
-        write_empty_defaults(&defaults);
-        assert!(matches!(
-            save_fn_button_mappings_to(
-                &custom,
-                &defaults,
-                &fn_path,
-                &FnButtonMappings::default()
-            ),
-            Err(HotkeyError::Conflict(trigger)) if trigger == "XF86Tools"
-        ));
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn external_physical_entry_tampering_is_rejected() {
-        let (custom, defaults, fn_path, root) = fn_paths();
-        fs::create_dir_all(&root).unwrap();
-        fs::write(&custom, "{}").unwrap();
-        write_empty_defaults(&defaults);
-        let mappings = FnButtonMappings::default();
-        save_fn_button_mappings_to(&custom, &defaults, &fn_path, &mappings).unwrap();
-
-        let mut tampered = read(&custom).unwrap();
-        for (binding, value) in &mut tampered.0 {
-            if binding.description.as_deref() == Some("AORUS Control: fn-button:fan") {
-                *value = RawValue::from_boxed_ron("System(Screenshot)".into()).unwrap();
-            }
-        }
-        let text =
-            ron::ser::to_string_pretty(&tampered, ron::ser::PrettyConfig::default()).unwrap();
-        fs::write(&custom, format!("{text}\n")).unwrap();
-        assert!(matches!(
-            save_fn_button_mappings_to(&custom, &defaults, &fn_path, &mappings),
-            Err(HotkeyError::FnButtonModified(button)) if button == "fan"
-        ));
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn direct_fan_profile_actions_are_saved_for_write_mode() {
-        let (custom, defaults, fn_path, root) = fn_paths();
-        fs::create_dir_all(&root).unwrap();
-        fs::write(&custom, "{}").unwrap();
-        write_empty_defaults(&defaults);
-        let mut mappings = FnButtonMappings::default();
-        mappings.set(PhysicalButtonId::Fan, FnAction::FanGaming);
-        save_fn_button_mappings_to(&custom, &defaults, &fn_path, &mappings).unwrap();
-        let saved = fs::read_to_string(&custom).unwrap();
-        assert!(saved.contains("/usr/local/bin/aorusctl fan gaming"));
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn fn_file_failure_restores_the_previous_cosmic_file() {
-        let (custom, defaults, _fn_path, root) = fn_paths();
-        fs::create_dir_all(&root).unwrap();
-        let original = "{(modifiers:[Super],key:\"q\"):Close}";
-        fs::write(&custom, original).unwrap();
-        write_empty_defaults(&defaults);
-
-        let blocker = root.join("not-a-directory");
-        fs::write(&blocker, "blocker").unwrap();
-        let impossible_fn_path = blocker.join("fn-buttons.toml");
-        assert!(
-            save_fn_button_mappings_to(
-                &custom,
-                &defaults,
-                &impossible_fn_path,
-                &FnButtonMappings::default()
-            )
-            .is_err()
-        );
         assert_eq!(fs::read_to_string(&custom).unwrap(), original);
         fs::remove_dir_all(root).unwrap();
     }

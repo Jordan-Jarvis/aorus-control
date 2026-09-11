@@ -1,6 +1,6 @@
 //! System-bus API and the daemon's private orchestration layer.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -9,14 +9,17 @@ use std::time::{Duration, Instant};
 use zbus::blocking::{Connection, Proxy, connection::Builder};
 use zbus::interface;
 use zbus::message::Header;
+use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{Array, OwnedObjectPath, OwnedValue, Value};
 
 use crate::config::Config;
 use crate::curve::{FanCurve, FanPoint};
+use crate::fn_buttons::{FnAction, FnButtonMappings};
 use crate::hardware::{Hardware, HardwareError};
 use crate::model::{DaemonMode, FanMode, PowerProfile, Status};
 use crate::native_keys;
 use crate::profile;
+use crate::{DBUS_INTERFACE, DBUS_PATH};
 
 const POLKIT_ACTION: &str = "io.github.aoruslinux.control.modify";
 const WATCHDOG_INTERVAL: Duration = Duration::from_secs(60);
@@ -24,6 +27,7 @@ const RESUME_REAPPLY_DELAY: Duration = Duration::from_secs(4);
 const POWER_REAPPLY_DELAY: Duration = Duration::from_secs(2);
 const METHOD_TIMEOUT: Duration = Duration::from_secs(10);
 const CURVE_CACHE_TTL: Duration = Duration::from_secs(2);
+const NATIVE_KEYS_WATCHDOG_INTERVAL: Duration = Duration::from_secs(30);
 
 fn system_connection() -> Result<Connection, zbus::Error> {
     Builder::system()?.method_timeout(METHOD_TIMEOUT).build()
@@ -34,6 +38,8 @@ struct State {
     hardware: Option<Arc<Hardware>>,
     config: Config,
     config_path: PathBuf,
+    fn_mappings: FnButtonMappings,
+    fn_config_path: PathBuf,
     last_error: Option<String>,
     last_profile: Option<(PowerProfile, Instant)>,
     curve_cache: Option<(FanCurve, Instant)>,
@@ -46,6 +52,7 @@ type StateSnapshot = (DaemonMode, Option<Arc<Hardware>>, Config, Option<String>)
 pub struct AorusControl {
     state: Arc<Mutex<State>>,
     mutations: Arc<Mutex<()>>,
+    signal_connection: Arc<Mutex<Option<Connection>>>,
 }
 
 impl AorusControl {
@@ -66,12 +73,31 @@ impl AorusControl {
         } else {
             (Config::default(), None)
         };
+        let fn_config_path = std::env::var_os("AORUS_CONTROL_FN_CONFIG")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/etc/aorus-control/fn-buttons.toml"));
+        let (fn_mappings, fn_config_error) = if fn_config_path.exists() {
+            match crate::fn_buttons::load_mappings_from(&fn_config_path) {
+                Ok(mappings) => (mappings, None),
+                Err(error) if write_enabled => {
+                    return Err(format!(
+                        "refusing write-enabled startup with invalid Fn-button configuration: {error}"
+                    ));
+                }
+                Err(error) => (
+                    FnButtonMappings::default(),
+                    Some(format!("Fn-button configuration: {error}")),
+                ),
+            }
+        } else {
+            (FnButtonMappings::default(), None)
+        };
 
         let (hardware, hardware_error) = match discover_hardware() {
             Ok(hardware) => (Some(Arc::new(hardware)), None),
             Err(error) => (None, Some(format!("hardware discovery: {error}"))),
         };
-        let last_error = config_error.or(hardware_error);
+        let last_error = config_error.or(fn_config_error).or(hardware_error);
 
         Ok(Self {
             state: Arc::new(Mutex::new(State {
@@ -83,12 +109,45 @@ impl AorusControl {
                 hardware,
                 config,
                 config_path,
+                fn_mappings,
+                fn_config_path,
                 last_error,
                 last_profile: None,
                 curve_cache: None,
             })),
             mutations: Arc::new(Mutex::new(())),
+            signal_connection: Arc::new(Mutex::new(None)),
         })
+    }
+
+    /// Provide the daemon connection used for low-latency desktop notifications.
+    pub fn set_signal_connection(&self, connection: Connection) {
+        if let Ok(mut slot) = self.signal_connection.lock() {
+            *slot = Some(connection);
+        }
+    }
+
+    fn emit_profile_changed(&self, power_profile: Option<PowerProfile>, fan_mode: FanMode) {
+        let Ok(connection) = self
+            .signal_connection
+            .lock()
+            .ok()
+            .and_then(|connection| connection.clone())
+            .ok_or(())
+        else {
+            return;
+        };
+        let power_profile = power_profile.map_or_else(String::new, |profile| profile.to_string());
+        let fan_mode = fan_mode.to_string();
+        if let Err(error) = connection.emit_signal(
+            None::<&str>,
+            DBUS_PATH,
+            DBUS_INTERFACE,
+            "ProfileChanged",
+            &(power_profile, fan_mode),
+        ) {
+            eprintln!("aorusd: could not emit profile-change notification: {error}");
+        }
     }
 
     fn snapshot(&self) -> Result<StateSnapshot, String> {
@@ -182,6 +241,57 @@ impl AorusControl {
             .clone())
     }
 
+    fn fn_button_mappings(&self) -> Result<FnButtonMappings, String> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| "daemon state lock poisoned".to_owned())?
+            .fn_mappings
+            .clone())
+    }
+
+    fn fn_config_path(&self) -> Result<PathBuf, String> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| "daemon state lock poisoned".to_owned())?
+            .fn_config_path
+            .clone())
+    }
+
+    fn replace_fn_button_mappings(&self, mappings: FnButtonMappings) -> Result<(), String> {
+        mappings.validate().map_err(|error| error.to_string())?;
+        let previous = self.fn_button_mappings()?;
+        let path = self.fn_config_path()?;
+        crate::fn_buttons::save_mappings_to(&path, &mappings).map_err(|error| error.to_string())?;
+
+        if native_keys::status().attached
+            && let Err(error) = native_keys::configure_mappings(&mappings)
+        {
+            let config_rollback = crate::fn_buttons::save_mappings_to(&path, &previous);
+            let map_rollback = native_keys::configure_mappings(&previous);
+            return Err(match (config_rollback, map_rollback) {
+                (Ok(()), Ok(())) => {
+                    format!("native Fn-key mapping failed; previous mappings restored: {error}")
+                }
+                (config, map) => format!(
+                    "native Fn-key mapping failed ({error}); rollback failed (config: {}; map: {})",
+                    config
+                        .err()
+                        .map(|error| error.to_string())
+                        .unwrap_or_else(|| "ok".to_owned()),
+                    map.err().unwrap_or_else(|| "ok".to_owned())
+                ),
+            });
+        }
+
+        self.state
+            .lock()
+            .map_err(|_| "daemon state lock poisoned".to_owned())?
+            .fn_mappings = mappings;
+        Ok(())
+    }
+
     fn mapped_mode(&self, profile: PowerProfile) -> Result<FanMode, String> {
         self.state
             .lock()
@@ -248,6 +358,69 @@ impl AorusControl {
         }
     }
 
+    fn set_power_profile_unlocked(
+        &self,
+        profile: PowerProfile,
+        reason: &str,
+    ) -> Result<(), String> {
+        profile::set_profile(profile)?;
+        self.handle_profile_unlocked(profile, reason, true)
+    }
+
+    fn set_fan_mode_unlocked(&self, mode: FanMode, reason: &str) -> Result<(), String> {
+        if !mode.is_profile() {
+            return Err(format!("fan mode {mode} is not a writable profile mode"));
+        }
+        let hardware = self.hardware()?;
+        if mode == FanMode::Custom {
+            let curve = self.snapshot()?.2.custom_curve.ok_or_else(|| {
+                "Custom mode requires a stored, validated custom curve".to_owned()
+            })?;
+            self.apply_stored_curve(&curve)?;
+        } else {
+            hardware
+                .reselect_fan_mode(mode)
+                .map_err(|error| error.to_string())?;
+        }
+        self.clear_error();
+        eprintln!("aorusd: {reason}: applied {mode}");
+        self.emit_profile_changed(profile::current_profile().ok(), mode);
+        Ok(())
+    }
+
+    fn dispatch_fn_action(&self, action: FnAction) -> Result<(), String> {
+        self.require_write_mode()?;
+        let _guard = self
+            .mutations
+            .lock()
+            .map_err(|_| "daemon mutation lock poisoned".to_owned())?;
+        match action {
+            FnAction::PowerBattery => {
+                self.set_power_profile_unlocked(PowerProfile::Battery, "Fn key")
+            }
+            FnAction::PowerBalanced => {
+                self.set_power_profile_unlocked(PowerProfile::Balanced, "Fn key")
+            }
+            FnAction::PowerPerformance => {
+                self.set_power_profile_unlocked(PowerProfile::Performance, "Fn key")
+            }
+            FnAction::CyclePowerProfile => {
+                let profile = match profile::current_profile()? {
+                    PowerProfile::Performance => PowerProfile::Balanced,
+                    PowerProfile::Balanced => PowerProfile::Battery,
+                    PowerProfile::Battery => PowerProfile::Performance,
+                };
+                self.set_power_profile_unlocked(profile, "Fn key cycle")
+            }
+            FnAction::FanNormal => self.set_fan_mode_unlocked(FanMode::Normal, "Fn key"),
+            FnAction::FanSilent => self.set_fan_mode_unlocked(FanMode::Silent, "Fn key"),
+            FnAction::FanGaming => self.set_fan_mode_unlocked(FanMode::Gaming, "Fn key"),
+            FnAction::FanCustom => self.set_fan_mode_unlocked(FanMode::Custom, "Fn key"),
+            FnAction::FanReapply => self.reapply_current_unlocked("Fn key reapply"),
+            _ => Err(format!("{} is not a daemon Fn-key action", action.id())),
+        }
+    }
+
     fn handle_profile_unlocked(
         &self,
         profile: PowerProfile,
@@ -279,6 +452,7 @@ impl AorusControl {
         if self.snapshot()?.0 == DaemonMode::Shadow {
             eprintln!("aorusd shadow: {reason}: {profile} -> {mode}; no hardware write");
             self.clear_error();
+            self.emit_profile_changed(Some(profile), mode);
             return Ok(());
         }
 
@@ -297,6 +471,7 @@ impl AorusControl {
         }
         eprintln!("aorusd: {reason}: applied {profile} -> {mode}");
         self.clear_error();
+        self.emit_profile_changed(Some(profile), mode);
         Ok(())
     }
 
@@ -460,13 +635,36 @@ impl AorusControl {
             }
         }
         let native_keys = native_keys::status();
+        let fn_mappings = self
+            .fn_button_mappings()
+            .map_err(zbus::fdo::Error::Failed)?;
         put(
             &mut values,
             "native_fn_keys_supported",
             native_keys.supported,
         );
         put(&mut values, "native_fn_keys_enabled", native_keys.enabled);
-        put(&mut values, "native_fn_keys_active", native_keys.active);
+        put(
+            &mut values,
+            "native_fn_keys_map_loaded",
+            native_keys.map_loaded,
+        );
+        put(&mut values, "native_fn_keys_attached", native_keys.attached);
+        put(
+            &mut values,
+            "native_fn_keys_reader_ready",
+            native_keys.reader_ready,
+        );
+        if let Some(generation) = native_keys.map_generation {
+            put(&mut values, "native_fn_keys_map_generation", generation);
+        }
+        put(
+            &mut values,
+            "native_fn_keys_active",
+            native_keys.attached
+                && native_keys.reader_ready
+                && native_keys::mappings_active(&fn_mappings),
+        );
         Ok(values)
     }
 
@@ -476,6 +674,15 @@ impl AorusControl {
             .profile_mappings
             .into_iter()
             .map(|(profile, mode)| (profile.to_string(), mode.as_u8()))
+            .collect())
+    }
+
+    fn get_fn_button_mappings(&self) -> zbus::fdo::Result<HashMap<String, String>> {
+        Ok(self
+            .fn_button_mappings()
+            .map_err(zbus::fdo::Error::Failed)?
+            .to_wire()
+            .into_iter()
             .collect())
     }
 
@@ -527,8 +734,7 @@ impl AorusControl {
             let profile = value
                 .parse::<PowerProfile>()
                 .map_err(|_| format!("unsupported power profile {value:?}"))?;
-            profile::set_profile(profile)?;
-            self.handle_profile_unlocked(profile, "SetPowerProfile", true)
+            self.set_power_profile_unlocked(profile, "SetPowerProfile")
         })()
         .map_err(|error| zbus::fdo::Error::Failed(self.remember_error(error)))
     }
@@ -536,23 +742,7 @@ impl AorusControl {
     fn set_fan_mode(&self, value: u8, #[zbus(header)] header: Header<'_>) -> zbus::fdo::Result<()> {
         self.mutate(&header, |control| {
             let mode = FanMode::try_from(value).map_err(|error| error.to_string())?;
-            if !mode.is_profile() {
-                return Err(format!("fan mode {mode} is not a writable profile mode"));
-            }
-            let hardware = control.hardware()?;
-            if mode == FanMode::Custom {
-                let curve = control.snapshot()?.2.custom_curve.ok_or_else(|| {
-                    "Custom mode requires a stored, validated custom curve".to_owned()
-                })?;
-                control.apply_stored_curve(&curve)?;
-            } else {
-                hardware
-                    .reselect_fan_mode(mode)
-                    .map_err(|error| error.to_string())?;
-            }
-            control.clear_error();
-            eprintln!("aorusd: SetFanMode applied {mode}");
-            Ok(())
+            control.set_fan_mode_unlocked(mode, "SetFanMode")
         })
     }
 
@@ -729,8 +919,42 @@ impl AorusControl {
         enabled: bool,
         #[zbus(header)] header: Header<'_>,
     ) -> zbus::fdo::Result<()> {
-        self.mutate(&header, |_control| native_keys::set_enabled(enabled))
+        self.mutate(&header, |control| {
+            native_keys::set_enabled(enabled)?;
+            if enabled
+                && let Err(error) = native_keys::configure_mappings(&control.fn_button_mappings()?)
+            {
+                let _ = native_keys::set_enabled(false);
+                return Err(format!(
+                    "native Fn-key input mapping failed; translation was disabled: {error}"
+                ));
+            }
+            Ok(())
+        })
     }
+
+    fn set_fn_button_mappings(
+        &self,
+        values: HashMap<String, String>,
+        #[zbus(header)] header: Header<'_>,
+    ) -> zbus::fdo::Result<()> {
+        self.mutate(&header, |control| {
+            let mappings =
+                FnButtonMappings::from_wire(values.into_iter().collect::<BTreeMap<_, _>>())
+                    .map_err(|error| error.to_string())?;
+            control.replace_fn_button_mappings(mappings)
+        })
+    }
+
+    #[zbus(signal)]
+    async fn open_requested(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    async fn profile_changed(
+        emitter: &SignalEmitter<'_>,
+        power_profile: &str,
+        fan_profile: &str,
+    ) -> zbus::Result<()>;
 }
 
 fn status_dictionary(status: Status) -> HashMap<String, OwnedValue> {
@@ -906,7 +1130,12 @@ fn authorize(header: &Header<'_>) -> zbus::fdo::Result<()> {
     }
 }
 
-pub fn spawn_background_workers(control: AorusControl) {
+pub fn spawn_background_workers(control: AorusControl, connection: Connection) {
+    match repair_native_keys(&control) {
+        Ok(true) => eprintln!("aorusd: restored native Fn-key attachment and map at startup"),
+        Ok(false) => {}
+        Err(error) => eprintln!("aorusd: native Fn-key startup repair failed: {error}"),
+    }
     if let Err(error) = control.reapply_current("startup") {
         control.remember_error(error);
     }
@@ -924,6 +1153,14 @@ pub fn spawn_background_workers(control: AorusControl) {
     }
     let logind_control = control.clone();
     spawn("logind-resume", move || logind_worker(logind_control));
+    spawn("native-keys-watchdog", {
+        let control = control.clone();
+        move || native_keys_watchdog_worker(control)
+    });
+    spawn("native-keys-actions", {
+        let control = control.clone();
+        move || native_keys_action_worker(control, connection)
+    });
     spawn("fan-watchdog", move || watchdog_worker(control));
 }
 
@@ -1091,11 +1328,126 @@ fn logind_worker(control: AorusControl) {
                 && !sleeping
             {
                 thread::sleep(RESUME_REAPPLY_DELAY);
+                match repair_native_keys(&control) {
+                    Ok(true) => eprintln!("aorusd: restored native Fn keys after resume"),
+                    Ok(false) => {}
+                    Err(error) => eprintln!("aorusd: native Fn-key resume repair failed: {error}"),
+                }
                 if let Err(error) = control.reapply_current("resume") {
                     control.remember_error(error);
                 }
             }
         }
+    }
+}
+
+fn repair_native_keys(control: &AorusControl) -> Result<bool, String> {
+    if control.require_write_mode().is_err() {
+        return Ok(false);
+    }
+    let _guard = control
+        .mutations
+        .lock()
+        .map_err(|_| "daemon mutation lock poisoned".to_owned())?;
+    let repaired = native_keys::repair_if_enabled()?;
+    if native_keys::is_enabled() {
+        let mappings = control.fn_button_mappings()?;
+        if repaired || !native_keys::mappings_active(&mappings) {
+            native_keys::configure_mappings(&mappings)?;
+            return Ok(true);
+        }
+    }
+    Ok(repaired)
+}
+
+fn native_keys_watchdog_worker(control: AorusControl) {
+    let mut last_error = None;
+    loop {
+        match repair_native_keys(&control) {
+            Ok(true) => {
+                eprintln!("aorusd: restored missing native Fn-key attachment");
+                last_error = None;
+            }
+            Ok(false) => last_error = None,
+            Err(error) if last_error.as_deref() != Some(error.as_str()) => {
+                eprintln!("aorusd: native Fn-key attachment check failed: {error}");
+                last_error = Some(error);
+            }
+            Err(_) => {}
+        }
+        thread::sleep(NATIVE_KEYS_WATCHDOG_INTERVAL);
+    }
+}
+
+fn native_keys_action_worker(control: AorusControl, connection: Connection) {
+    let mut last_error = None;
+    loop {
+        if !native_keys::is_enabled() {
+            last_error = None;
+            thread::sleep(Duration::from_secs(2));
+            continue;
+        }
+        let opened = (|| {
+            control.require_write_mode()?;
+            let _guard = control
+                .mutations
+                .lock()
+                .map_err(|_| "daemon mutation lock poisoned".to_owned())?;
+            if !native_keys::is_enabled() {
+                return Err("native Fn keys were disabled".to_owned());
+            }
+            native_keys::action_input()
+        })();
+        let mut input = match opened {
+            Ok(input) => {
+                last_error = None;
+                input
+            }
+            Err(error) => {
+                log_changed(
+                    &mut last_error,
+                    format!("aorusd: native Fn-key input unavailable: {error}"),
+                );
+                thread::sleep(Duration::from_secs(2));
+                continue;
+            }
+        };
+
+        while native_keys::is_enabled() {
+            match input.poll_action() {
+                Ok(Some(FnAction::OpenApp)) => {
+                    if let Err(error) = connection.emit_signal(
+                        None::<&str>,
+                        DBUS_PATH,
+                        DBUS_INTERFACE,
+                        "OpenRequested",
+                        &(),
+                    ) {
+                        eprintln!("aorusd: could not emit Fn-key open request: {error}");
+                    }
+                }
+                Ok(Some(action)) => {
+                    if let Err(error) = control.dispatch_fn_action(action) {
+                        control.remember_error(format!("Fn key {}: {error}", action.id()));
+                    }
+                }
+                Ok(None) => thread::sleep(Duration::from_millis(50)),
+                Err(error) => {
+                    log_changed(
+                        &mut last_error,
+                        format!("aorusd: native Fn-key input disconnected: {error}"),
+                    );
+                    break;
+                }
+            }
+        }
+    }
+}
+
+fn log_changed(previous: &mut Option<String>, message: String) {
+    if previous.as_deref() != Some(message.as_str()) {
+        eprintln!("{message}");
+        *previous = Some(message);
     }
 }
 

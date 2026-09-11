@@ -36,7 +36,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .name(DBUS_DESTINATION)?
         .serve_at(DBUS_PATH, control.clone())?
         .build()?;
-    aorus_control::dbus::spawn_background_workers(control);
+    control.set_signal_connection(connection.clone());
+    aorus_control::dbus::spawn_background_workers(control, connection.clone());
     eprintln!("aorusd: serving {DBUS_DESTINATION} at {DBUS_PATH}");
     loop {
         thread::park();

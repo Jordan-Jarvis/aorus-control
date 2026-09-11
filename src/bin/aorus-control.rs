@@ -10,18 +10,19 @@ use std::{
 };
 
 use aorus_control::{
-    fn_buttons::{ButtonEvidence, FnAction, FnButtonMappings, PhysicalButtonId},
+    fn_buttons::{FnAction, FnButtonMappings, PhysicalButtonId},
     hotkeys::{
-        HotkeyAction, HotkeyMapping, backend_available, load_mappings,
-        load_or_install_fn_button_mappings, normalize_binding, save_fn_button_mappings,
-        save_mappings,
+        HotkeyAction, HotkeyMapping, backend_available, load_mappings, normalize_binding,
+        remove_legacy_fn_button_shortcuts, save_mappings,
     },
 };
 use desktop_lifecycle::{DesktopLifecycle, Event as LifecycleEvent, TrayHandle};
 use eframe::egui::{
-    self, Align, Color32, Context, FontId, Frame, Key, Layout, Margin, RichText, Stroke, Vec2,
+    self, Align, Align2, Color32, Context, FontId, Frame, Key, Layout, Margin, Order, RichText,
+    Stroke, Vec2,
 };
 use egui_plot::{Line, Plot, PlotPoint, Points, VLine};
+use winit::platform::x11::EventLoopBuilderExtX11;
 use zbus::{blocking::connection::Builder as ConnectionBuilder, zvariant::OwnedValue};
 
 const DESTINATION: &str = "io.github.aoruslinux.Control1";
@@ -31,6 +32,8 @@ const CURVE_POINTS: usize = 15;
 const TELEMETRY_INTERVAL: Duration = Duration::from_secs(2);
 const STALE_AFTER: Duration = Duration::from_secs(8);
 const DBUS_METHOD_TIMEOUT: Duration = Duration::from_secs(5);
+const PROFILE_OSD_DURATION: Duration = Duration::from_millis(2200);
+const PROFILE_OSD_FADE: Duration = Duration::from_millis(700);
 const TEMPERATURE_CHANNELS: [(&str, &str); 3] = [
     ("CPU temperature", "EC channel 1 • provisional mapping"),
     ("GPU temperature", "EC channel 2 • provisional mapping"),
@@ -58,6 +61,11 @@ fn main() -> eframe::Result {
         return Ok(());
     };
     let options = eframe::NativeOptions {
+        // Winit's Wayland set_visible is a no-op, including initial visibility.
+        // Use X11 (XWayland on Wayland desktops) for real hide-to-tray support.
+        event_loop_builder: Some(Box::new(|builder| {
+            builder.with_x11();
+        })),
         viewport: egui::ViewportBuilder::default()
             .with_app_id("io.github.aoruslinux.Control")
             .with_title("AORUS Control")
@@ -69,7 +77,7 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "AORUS Control",
         options,
-        Box::new(move |cc| Ok(Box::new(AorusApp::new(cc, lifecycle)))),
+        Box::new(move |cc| Ok(Box::new(AorusApp::new(cc, lifecycle, start_hidden)))),
     )
 }
 
@@ -175,6 +183,10 @@ struct Status {
     custom_curve_available: Option<bool>,
     native_fn_keys_supported: Option<bool>,
     native_fn_keys_enabled: Option<bool>,
+    native_fn_keys_attached: Option<bool>,
+    native_fn_keys_map_loaded: Option<bool>,
+    native_fn_keys_map_generation: Option<u32>,
+    native_fn_keys_reader_ready: Option<bool>,
     native_fn_keys_active: Option<bool>,
     fan_modes: Vec<FanMode>,
     fan_curve_points: Option<u8>,
@@ -208,6 +220,7 @@ impl Status {
 enum Command {
     Refresh,
     RefreshCurve,
+    RefreshConfiguration,
     SetPowerProfile(String),
     SetFanMode(FanMode),
     ReapplyFanProfile,
@@ -216,6 +229,7 @@ enum Command {
     SetChargeMode(u8),
     SetChargeLimit(u8),
     SetGpuBoost(u8),
+    SetFnButtonMappings(FnButtonMappings),
     SetNativeFnKeysEnabled(bool),
 }
 
@@ -224,6 +238,7 @@ impl Command {
         match self {
             Self::Refresh => "Refresh",
             Self::RefreshCurve => "Reload fan curve",
+            Self::RefreshConfiguration => "Reload configuration",
             Self::SetPowerProfile(_) => "Change power profile",
             Self::SetFanMode(_) => "Change fan profile",
             Self::ReapplyFanProfile => "Reapply fan profile",
@@ -232,6 +247,7 @@ impl Command {
             Self::SetChargeMode(_) => "Change charge mode",
             Self::SetChargeLimit(_) => "Set charge limit",
             Self::SetGpuBoost(_) => "Set GPU boost",
+            Self::SetFnButtonMappings(_) => "Save Fn-button mappings",
             Self::SetNativeFnKeysEnabled(true) => "Enable native Fn keys",
             Self::SetNativeFnKeysEnabled(false) => "Disable native Fn keys",
         }
@@ -246,12 +262,24 @@ enum WorkerEvent {
     },
     Curve(Result<[CurvePoint; CURVE_POINTS], String>),
     ProfileMappings(Result<HashMap<String, FanMode>, String>),
+    FnButtonMappings(Result<FnButtonMappings, String>),
+    ProfileChanged {
+        power_profile: String,
+        fan_profile: String,
+    },
     ActionStarted(&'static str),
     ActionFinished {
         action: &'static str,
         result: Result<(), String>,
     },
     ConnectionError(String),
+}
+
+#[derive(Clone, Debug)]
+struct ProfileOsd {
+    power_profile: Option<String>,
+    fan_profile: Option<String>,
+    shown_at: Instant,
 }
 
 struct AorusApp {
@@ -286,13 +314,19 @@ struct AorusApp {
     fn_button_message: Option<String>,
     auto_brightness_enabled: Option<bool>,
     auto_brightness_message: Option<String>,
+    profile_osd: Option<ProfileOsd>,
+    window_visible: bool,
     lifecycle: DesktopLifecycle,
     _tray: Option<TrayHandle>,
     quitting: bool,
 }
 
 impl AorusApp {
-    fn new(cc: &eframe::CreationContext<'_>, lifecycle: DesktopLifecycle) -> Self {
+    fn new(
+        cc: &eframe::CreationContext<'_>,
+        lifecycle: DesktopLifecycle,
+        start_hidden: bool,
+    ) -> Self {
         configure_style(&cc.egui_ctx);
         let tray = lifecycle
             .start_tray(cc.egui_ctx.clone())
@@ -321,13 +355,8 @@ impl AorusApp {
             )
         };
         let saved_hotkey_bindings = hotkey_bindings.clone();
-        let (fn_button_mappings, fn_button_error) = match load_or_install_fn_button_mappings() {
-            Ok(mappings) => (mappings, None),
-            Err(error) => (
-                FnButtonMappings::default(),
-                Some(format!("Could not load laptop Fn-button mappings: {error}")),
-            ),
-        };
+        let fn_button_mappings = FnButtonMappings::default();
+        let fn_button_error = None;
         let saved_fn_button_mappings = fn_button_mappings.clone();
         Self {
             tab: Tab::Dashboard,
@@ -361,6 +390,8 @@ impl AorusApp {
             fn_button_message: None,
             auto_brightness_enabled: auto_brightness_enabled(),
             auto_brightness_message: None,
+            profile_osd: None,
+            window_visible: !start_hidden,
             lifecycle,
             _tray: tray,
             quitting: false,
@@ -380,19 +411,20 @@ impl AorusApp {
                     }
                     self.status = Some(*status);
                     self.last_snapshot = Some(received_at);
-                    self.connection_error = None;
+                    if self.connection_error.take().is_some() {
+                        self.send(Command::RefreshConfiguration);
+                    }
                 }
                 WorkerEvent::Curve(result) => match result {
                     Ok(curve) => {
-                        let dirty = self.curve_dirty();
-                        self.firmware_curve = Some(curve);
-                        if !dirty || !self.curve_loaded {
-                            self.edited_curve = curve;
-                        }
+                        merge_curve_refresh(
+                            &mut self.firmware_curve,
+                            &mut self.edited_curve,
+                            curve,
+                        );
                         self.curve_loaded = true;
                     }
                     Err(error) => {
-                        self.firmware_curve = None;
                         self.curve_loaded = false;
                         self.action_message =
                             Some((false, format!("Fan curve could not be loaded: {error}")));
@@ -414,6 +446,32 @@ impl AorusApp {
                         ));
                     }
                 },
+                WorkerEvent::FnButtonMappings(result) => match result {
+                    Ok(mappings) => {
+                        if self.fn_button_mappings == self.saved_fn_button_mappings {
+                            self.fn_button_mappings = mappings.clone();
+                        }
+                        self.saved_fn_button_mappings = mappings;
+                        self.fn_button_error = None;
+                    }
+                    Err(error) => {
+                        self.fn_button_error =
+                            Some(format!("Fn-button mappings could not be loaded: {error}"));
+                    }
+                },
+                WorkerEvent::ProfileChanged {
+                    power_profile,
+                    fan_profile,
+                } => {
+                    if !self.window_visible {
+                        show_profile_notification(&power_profile, &fan_profile);
+                    }
+                    self.profile_osd = Some(ProfileOsd {
+                        power_profile: (!power_profile.is_empty()).then_some(power_profile),
+                        fan_profile: (!fan_profile.is_empty()).then_some(fan_profile),
+                        shown_at: Instant::now(),
+                    });
+                }
                 WorkerEvent::ActionStarted(action) => {
                     self.action_in_flight = Some(action);
                     self.action_message = None;
@@ -423,9 +481,19 @@ impl AorusApp {
                     if result.is_ok() {
                         if action == "Save profile mappings" {
                             self.saved_mappings = self.mappings.clone();
+                        } else if action == "Save Fn-button mappings" {
+                            self.fn_button_error = None;
+                            self.fn_button_message =
+                                Some("Laptop Fn-button mappings saved system-wide.".to_owned());
                         } else if action == "Set charge limit" {
                             self.charge_limit_dirty = false;
                         }
+                    }
+                    if action == "Save Fn-button mappings"
+                        && let Err(error) = &result
+                    {
+                        self.fn_button_error = Some(format!("Fn mappings were not saved: {error}"));
+                        self.fn_button_message = None;
                     }
                     self.action_message = Some(match result {
                         Ok(()) => (
@@ -439,7 +507,6 @@ impl AorusApp {
                     self.connection_error = Some(error);
                     self.status = None;
                     self.last_snapshot = None;
-                    self.firmware_curve = None;
                     self.curve_loaded = false;
                     self.mappings_loaded = false;
                 }
@@ -701,6 +768,82 @@ impl AorusApp {
                         }
                     });
             });
+    }
+
+    fn show_profile_osd(&self, ctx: &Context) {
+        let Some(osd) = &self.profile_osd else {
+            return;
+        };
+        let elapsed = osd.shown_at.elapsed();
+        if elapsed >= PROFILE_OSD_DURATION {
+            return;
+        }
+        let fade_start = PROFILE_OSD_DURATION.saturating_sub(PROFILE_OSD_FADE);
+        let opacity = if elapsed <= fade_start {
+            1.0
+        } else {
+            1.0 - (elapsed - fade_start).as_secs_f32() / PROFILE_OSD_FADE.as_secs_f32()
+        };
+        let opacity = opacity.clamp(0.0, 1.0);
+        let color = osd
+            .power_profile
+            .as_deref()
+            .map(profile_color)
+            .unwrap_or(CYAN);
+        let tint = |alpha: u8| {
+            Color32::from_rgba_unmultiplied(
+                color.r(),
+                color.g(),
+                color.b(),
+                (f32::from(alpha) * opacity) as u8,
+            )
+        };
+        egui::Area::new("profile-osd".into())
+            .order(Order::Foreground)
+            .anchor(Align2::CENTER_BOTTOM, [0.0, -28.0])
+            .interactable(false)
+            .show(ctx, |ui| {
+                Frame::new()
+                    .fill(Color32::from_rgba_unmultiplied(
+                        25,
+                        28,
+                        36,
+                        (235.0 * opacity) as u8,
+                    ))
+                    .stroke(Stroke::new(1.0, tint(210)))
+                    .corner_radius(12.0)
+                    .inner_margin(Margin::symmetric(20, 14))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("⚡").size(28.0).color(tint(255)));
+                            ui.vertical(|ui| {
+                                ui.label(RichText::new("Profile changed").small().color(tint(190)));
+                                if let Some(power_profile) = &osd.power_profile {
+                                    ui.label(
+                                        RichText::new(title_case(power_profile))
+                                            .size(20.0)
+                                            .strong()
+                                            .color(tint(255)),
+                                    );
+                                }
+                                if let Some(fan_profile) = &osd.fan_profile {
+                                    ui.label(
+                                        RichText::new(format!("Fans: {}", title_case(fan_profile)))
+                                            .small()
+                                            .color(tint(210)),
+                                    );
+                                }
+                            });
+                        });
+                        ui.add(
+                            egui::ProgressBar::new(1.0)
+                                .desired_width(220.0)
+                                .text("")
+                                .fill(tint(220)),
+                        );
+                    });
+            });
+        ctx.request_repaint_after(Duration::from_millis(16));
     }
 
     fn dashboard(&mut self, ui: &mut egui::Ui) {
@@ -1483,7 +1626,7 @@ impl AorusApp {
         ui.add(
             egui::Label::new(
                 RichText::new(
-                    "Choose actions for the nine managed laptop Fn buttons. Changes save immediately and work while AORUS Control is closed once each button's native trigger is active.",
+                    "Choose actions for the managed laptop Fn buttons. Vendor-report mappings are stored system-wide and use native Linux input events, so they remain active across logout, suspend, and desktop environments.",
                 )
                 .color(MUTED),
             )
@@ -1505,24 +1648,60 @@ impl AorusApp {
             .as_ref()
             .and_then(|status| status.native_fn_keys_active)
             .unwrap_or(false);
+        let native_attached = self
+            .status
+            .as_ref()
+            .and_then(|status| status.native_fn_keys_attached)
+            .unwrap_or(false);
+        let native_map_loaded = self
+            .status
+            .as_ref()
+            .and_then(|status| status.native_fn_keys_map_loaded)
+            .unwrap_or(false);
+        let native_reader_ready = self
+            .status
+            .as_ref()
+            .and_then(|status| status.native_fn_keys_reader_ready)
+            .unwrap_or(false);
+        let native_generation = self
+            .status
+            .as_ref()
+            .and_then(|status| status.native_fn_keys_map_generation);
         let can_change_native = native_supported && self.write_enabled();
         let mut native_request = None;
         card(ui, |ui| {
             ui.label(RichText::new("Native Fn-key mapping").strong());
             let (state, color) = if native_active {
                 ("Active and persistent", GREEN)
-            } else if native_enabled {
+            } else if native_enabled && !native_attached {
                 ("Enabled but not attached", RED)
+            } else if native_enabled {
+                ("Attached but not fully ready", AMBER)
             } else if native_supported {
                 ("Ready to enable", AMBER)
             } else {
                 ("Unavailable on this hardware or installation", MUTED)
             };
             ui.label(RichText::new(format!("● {state}")).color(color));
+            if native_enabled {
+                ui.label(
+                    RichText::new(format!(
+                        "Attachment: {}  •  Action map: {}  •  Daemon input: {}{}",
+                        on_off(native_attached),
+                        on_off(native_map_loaded),
+                        on_off(native_reader_ready),
+                        native_generation
+                            .map(|generation| format!("  •  Generation: {generation}"))
+                            .unwrap_or_default()
+                    ))
+                    .small()
+                    .color(MUTED),
+                );
+            }
             ui.add(
                 egui::Label::new(
                     RichText::new(
-                        "Enabling saves the mappings first, then activates the exact-model native HID path. Mappings keep working while this window is hidden or the UI is fully quit.",
+                        "Enabling activates the saved system-wide mappings. The daemon repairs the HID-BPF attachment and action map after resume or device reprobe.",
                     )
                     .small()
                     .color(MUTED),
@@ -1545,16 +1724,14 @@ impl AorusApp {
                 native_request = Some(requested);
             }
         });
-        if let Some(enabled) = native_request
-            && (!enabled || self.save_fn_buttons())
-        {
+        if let Some(enabled) = native_request {
             self.send(Command::SetNativeFnKeysEnabled(enabled));
         }
         ui.add_space(8.0);
         banner(
             ui,
             CYAN,
-            "Seven vendor-report buttons use native HID-BPF identities. Display and touchpad lock reuse their captured native keyboard chords so one press cannot dispatch twice. Airplane-mode and volume keys remain Linux-owned and unmanaged.",
+            "Seven vendor-report buttons use system-wide HID-BPF identities and kernel key mappings. Display and touchpad lock retain their firmware-native actions and cannot be remapped until their duplicate chord path can be suppressed safely. Airplane-mode and volume keys remain Linux-owned.",
         );
         ui.add_space(12.0);
 
@@ -1571,38 +1748,24 @@ impl AorusApp {
                 let label = ui.label(RichText::new(button.label()).strong());
                 let current = self.fn_button_mappings.get(button);
                 let default = button.default_action();
-                let captured = matches!(button.evidence(), ButtonEvidence::Captured(_));
-                let status = match button.evidence() {
-                    ButtonEvidence::Captured(report) if button == PhysicalButtonId::Display => {
-                        format!(
-                            "Captured interface-0 sequence ({report}); native trigger {}",
-                            button.trigger()
-                        )
-                    }
-                    ButtonEvidence::Captured(report)
-                        if button == PhysicalButtonId::TouchpadLock =>
-                    {
-                        format!(
-                            "Captured interface-0 sequence ({report}); native trigger {}",
-                            button.trigger()
-                        )
-                    }
-                    ButtonEvidence::Captured(report) => format!(
-                        "Captured interface-2 report {report}; native HID trigger {}",
-                        button.trigger()
+                let status = match button.native_scancode() {
+                    Some(scancode) => format!(
+                        "Captured interface-2 report {}; kernel HID usage {scancode:#x}",
+                        button.evidence()
                     ),
-                    ButtonEvidence::NotCaptured => format!(
-                        "Not captured; {} identity reserved, translation inactive",
-                        button.trigger()
-                    ),
+                    None => format!("Captured firmware-native {}", button.evidence()),
                 };
 
                 ui.add(
                     egui::Label::new(
                         RichText::new(format!(
-                            "Default: {}  •  Trigger: {}",
+                            "Default: {}  •  {}",
                             default.label(),
-                            button.trigger()
+                            if button.remappable() {
+                                "System-wide remapping"
+                            } else {
+                                "Fixed firmware action"
+                            }
                         ))
                         .small()
                         .color(MUTED),
@@ -1610,46 +1773,26 @@ impl AorusApp {
                     .wrap(),
                 )
                 .on_hover_text(format!(
-                    "Stable button ID: {}. The trigger is an internal native key identity, not a conventional shortcut.",
+                    "Stable button ID: {}. Mapped buttons use kernel input keycodes, not desktop shortcut records.",
                     button.id()
                 ));
                 ui.add(
                     egui::Label::new(
-                        RichText::new(if captured {
-                            format!("● {status}")
-                        } else {
-                            format!("○ {status}")
-                        })
+                        RichText::new(format!("● {status}"))
                         .small()
-                        .color(if captured { CYAN } else { MUTED }),
+                        .color(CYAN),
                     )
                     .wrap(),
                 )
                 .on_hover_text(
-                    "The displayed trigger is generated by the native HID/input stack; no userspace key listener or synthetic input device is used.",
+                    "The identity is generated by the native HID/input stack; standard actions reach the desktop; aorusd reads AORUS-specific actions.",
                 );
                 ui.add_space(6.0);
 
                 let stacked = stack_fn_button_controls(ui.available_width());
-                if stacked {
-                    ui.label(RichText::new("Action").small().color(MUTED));
-                    let (response, changed) =
-                        fn_action_selector(ui, button, current, &mut self.fn_button_mappings);
-                    response.labelled_by(label.id);
-                    if changed {
-                        self.save_fn_buttons();
-                    }
-                    if ui
-                        .button("Reset to default")
-                        .labelled_by(label.id)
-                        .on_hover_text(format!("Reset {} to {}", button.label(), default.label()))
-                        .clicked()
-                    {
-                        self.fn_button_mappings.reset(button);
-                        self.save_fn_buttons();
-                    }
-                } else {
-                    ui.horizontal(|ui| {
+                let remappable = button.remappable();
+                ui.add_enabled_ui(remappable, |ui| {
+                    if stacked {
                         ui.label(RichText::new("Action").small().color(MUTED));
                         let (response, changed) =
                             fn_action_selector(ui, button, current, &mut self.fn_button_mappings);
@@ -1658,7 +1801,7 @@ impl AorusApp {
                             self.save_fn_buttons();
                         }
                         if ui
-                            .button("Reset")
+                            .button("Reset to default")
                             .labelled_by(label.id)
                             .on_hover_text(format!(
                                 "Reset {} to {}",
@@ -1670,7 +1813,43 @@ impl AorusApp {
                             self.fn_button_mappings.reset(button);
                             self.save_fn_buttons();
                         }
-                    });
+                    } else {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Action").small().color(MUTED));
+                            let (response, changed) = fn_action_selector(
+                                ui,
+                                button,
+                                current,
+                                &mut self.fn_button_mappings,
+                            );
+                            response.labelled_by(label.id);
+                            if changed {
+                                self.save_fn_buttons();
+                            }
+                            if ui
+                                .button("Reset")
+                                .labelled_by(label.id)
+                                .on_hover_text(format!(
+                                    "Reset {} to {}",
+                                    button.label(),
+                                    default.label()
+                                ))
+                                .clicked()
+                            {
+                                self.fn_button_mappings.reset(button);
+                                self.save_fn_buttons();
+                            }
+                        });
+                    }
+                });
+                if !remappable {
+                    ui.label(
+                        RichText::new(
+                            "Firmware-native action; system-wide remapping is not yet safe.",
+                        )
+                        .small()
+                        .color(AMBER),
+                    );
                 }
             });
             ui.add_space(8.0);
@@ -1688,21 +1867,11 @@ impl AorusApp {
         }
     }
 
-    fn save_fn_buttons(&mut self) -> bool {
+    fn save_fn_buttons(&mut self) {
         self.fn_button_message = None;
-        match save_fn_button_mappings(&self.fn_button_mappings) {
-            Ok(()) => {
-                self.saved_fn_button_mappings = self.fn_button_mappings.clone();
-                self.fn_button_error = None;
-                self.fn_button_message = Some("Laptop Fn-button mappings saved.".to_owned());
-                true
-            }
-            Err(error) => {
-                self.fn_button_error =
-                    Some(format!("Could not save laptop Fn-button mappings: {error}"));
-                false
-            }
-        }
+        self.send(Command::SetFnButtonMappings(
+            self.fn_button_mappings.clone(),
+        ));
     }
 
     fn hotkeys(&mut self, ui: &mut egui::Ui) {
@@ -1732,7 +1901,7 @@ impl AorusApp {
             banner(
                 ui,
                 AMBER,
-                "Global shortcut editing is unavailable outside a COSMIC desktop session. The native brightness-key path remains independent of this screen.",
+                "Global shortcut editing is unavailable outside a COSMIC desktop session. The system-wide laptop Fn mappings above remain independent of this screen.",
             );
             ui.add_space(12.0);
         }
@@ -2206,7 +2375,7 @@ impl AorusApp {
             );
         };
         format!(
-            "AORUS Control diagnostic report\nD-Bus: {DESTINATION}\nDaemon mode: {}\nDriver available: {:?}\nPower profile: {}\nFan mode: {}\nEC temperatures (m°C): {:?}\nFans (RPM): {:?}\nCharge mode: {:?}\nCharge limit: {:?}\nBattery cycles: {:?}\nGPU boost: {:?}\nGPU boost values: {:?}\nFan modes: {:?}\nFan curve points: {:?}\nCharge mode/limit capabilities: {:?}/{:?}\nUSB S3/S4 capabilities: {:?}/{:?}\nGraphics mode: {:?}\nGraphics power: {:?}\nUSB S3/S4: {:?}/{:?}\nCustom curve available: {:?}\nProduct: {:?} {:?}\nBIOS: {:?} ({:?})\nKernel: {:?}\nDriver module: {:?}\nPlatform path: {:?}\nHwmon path: {:?}\nLast error: {}\nUnknown status keys: {:?}",
+            "AORUS Control diagnostic report\nD-Bus: {DESTINATION}\nDaemon mode: {}\nDriver available: {:?}\nPower profile: {}\nFan mode: {}\nEC temperatures (m°C): {:?}\nFans (RPM): {:?}\nCharge mode: {:?}\nCharge limit: {:?}\nBattery cycles: {:?}\nGPU boost: {:?}\nGPU boost values: {:?}\nFan modes: {:?}\nFan curve points: {:?}\nCharge mode/limit capabilities: {:?}/{:?}\nUSB S3/S4 capabilities: {:?}/{:?}\nGraphics mode: {:?}\nGraphics power: {:?}\nUSB S3/S4: {:?}/{:?}\nCustom curve available: {:?}\nNative Fn keys supported/enabled/attached/map-loaded/generation/reader-ready/active: {:?}/{:?}/{:?}/{:?}/{:?}/{:?}/{:?}\nProduct: {:?} {:?}\nBIOS: {:?} ({:?})\nKernel: {:?}\nDriver module: {:?}\nPlatform path: {:?}\nHwmon path: {:?}\nLast error: {}\nUnknown status keys: {:?}",
             status.daemon_mode.as_deref().unwrap_or("unknown"),
             status.driver_available,
             status.power_profile.as_deref().unwrap_or("unknown"),
@@ -2229,6 +2398,13 @@ impl AorusApp {
             status.usb_charge_s3,
             status.usb_charge_s4,
             status.custom_curve_available,
+            status.native_fn_keys_supported,
+            status.native_fn_keys_enabled,
+            status.native_fn_keys_attached,
+            status.native_fn_keys_map_loaded,
+            status.native_fn_keys_map_generation,
+            status.native_fn_keys_reader_ready,
+            status.native_fn_keys_active,
             status.product_name,
             status.product_version,
             status.bios_version,
@@ -2258,6 +2434,7 @@ impl eframe::App for AorusApp {
         while let Some(event) = self.lifecycle.try_recv() {
             match event {
                 LifecycleEvent::Open => {
+                    self.window_visible = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
@@ -2268,10 +2445,18 @@ impl eframe::App for AorusApp {
             }
         }
         if ctx.input(|input| input.viewport().close_requested()) && !self.quitting {
+            self.window_visible = false;
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
         self.drain_events();
+        if self
+            .profile_osd
+            .as_ref()
+            .is_some_and(|osd| osd.shown_at.elapsed() >= PROFILE_OSD_DURATION)
+        {
+            self.profile_osd = None;
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -2284,8 +2469,21 @@ impl eframe::App for AorusApp {
         }
         self.show_top_bar(ui, compact_navigation);
         self.show_content(ui);
+        self.show_profile_osd(ui.ctx());
         ui.ctx().request_repaint_after(Duration::from_millis(500));
     }
+}
+
+// Keep the prior baseline through outages so reconnecting cannot erase local edits.
+fn merge_curve_refresh(
+    baseline: &mut Option<[CurvePoint; CURVE_POINTS]>,
+    edited: &mut [CurvePoint; CURVE_POINTS],
+    incoming: [CurvePoint; CURVE_POINTS],
+) {
+    if baseline.is_none_or(|previous| previous == *edited) {
+        *edited = incoming;
+    }
+    *baseline = Some(incoming);
 }
 
 fn spawn_dbus_worker(command_rx: Receiver<Command>, event_tx: Sender<WorkerEvent>, ctx: Context) {
@@ -2293,8 +2491,12 @@ fn spawn_dbus_worker(command_rx: Receiver<Command>, event_tx: Sender<WorkerEvent
         .name("aorus-dbus".to_owned())
         .spawn(move || {
             refresh_status(&event_tx);
-            refresh_curve(&event_tx);
+            let mut curve_ready = refresh_curve(&event_tx);
+            let mut next_curve_retry = Instant::now() + Duration::from_secs(10);
             refresh_profile_mappings(&event_tx);
+            refresh_fn_button_mappings(&event_tx);
+            spawn_open_request_listener(ctx.clone());
+            spawn_profile_change_listener(ctx.clone(), event_tx.clone());
             ctx.request_repaint();
 
             let mut next_refresh = Instant::now() + TELEMETRY_INTERVAL;
@@ -2302,11 +2504,20 @@ fn spawn_dbus_worker(command_rx: Receiver<Command>, event_tx: Sender<WorkerEvent
                 let timeout = next_refresh.saturating_duration_since(Instant::now());
                 match command_rx.recv_timeout(timeout) {
                     Ok(Command::Refresh) => refresh_status(&event_tx),
-                    Ok(Command::RefreshCurve) => refresh_curve(&event_tx),
+                    Ok(Command::RefreshCurve) => {
+                        curve_ready = refresh_curve(&event_tx);
+                    }
+                    Ok(Command::RefreshConfiguration) => {
+                        curve_ready = refresh_curve(&event_tx);
+                        refresh_profile_mappings(&event_tx);
+                        refresh_fn_button_mappings(&event_tx);
+                    }
                     Ok(command) => {
                         let action = command.label();
                         let reload_curve = matches!(&command, Command::SetFanCurve(_));
                         let reload_mappings = matches!(&command, Command::SetProfileMappings(_));
+                        let reload_fn_mappings =
+                            matches!(&command, Command::SetFnButtonMappings(_));
                         let _ = event_tx.send(WorkerEvent::ActionStarted(action));
                         ctx.request_repaint();
                         let result = perform_command(command);
@@ -2314,14 +2525,21 @@ fn spawn_dbus_worker(command_rx: Receiver<Command>, event_tx: Sender<WorkerEvent
                         let _ = event_tx.send(WorkerEvent::ActionFinished { action, result });
                         refresh_status(&event_tx);
                         if succeeded && reload_curve {
-                            refresh_curve(&event_tx);
+                            curve_ready = refresh_curve(&event_tx);
                         }
                         if succeeded && reload_mappings {
                             refresh_profile_mappings(&event_tx);
                         }
+                        if succeeded && reload_fn_mappings {
+                            refresh_fn_button_mappings(&event_tx);
+                        }
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => refresh_status(&event_tx),
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+                if !curve_ready && Instant::now() >= next_curve_retry {
+                    curve_ready = refresh_curve(&event_tx);
+                    next_curve_retry = Instant::now() + Duration::from_secs(10);
                 }
                 next_refresh = Instant::now() + TELEMETRY_INTERVAL;
                 ctx.request_repaint();
@@ -2344,12 +2562,19 @@ fn refresh_status(event_tx: &Sender<WorkerEvent>) {
     }
 }
 
-fn refresh_curve(event_tx: &Sender<WorkerEvent>) {
-    let _ = event_tx.send(WorkerEvent::Curve(fetch_curve()));
+fn refresh_curve(event_tx: &Sender<WorkerEvent>) -> bool {
+    let result = fetch_curve();
+    let ready = result.is_ok();
+    let _ = event_tx.send(WorkerEvent::Curve(result));
+    ready
 }
 
 fn refresh_profile_mappings(event_tx: &Sender<WorkerEvent>) {
     let _ = event_tx.send(WorkerEvent::ProfileMappings(fetch_profile_mappings()));
+}
+
+fn refresh_fn_button_mappings(event_tx: &Sender<WorkerEvent>) {
+    let _ = event_tx.send(WorkerEvent::FnButtonMappings(fetch_fn_button_mappings()));
 }
 
 fn with_proxy<T>(
@@ -2399,9 +2624,21 @@ fn fetch_profile_mappings() -> Result<HashMap<String, FanMode>, String> {
     })
 }
 
+fn fetch_fn_button_mappings() -> Result<FnButtonMappings, String> {
+    with_proxy(|proxy| {
+        let mappings: HashMap<String, String> = proxy
+            .call("GetFnButtonMappings", &())
+            .map_err(display_dbus_error)?;
+        let mappings = FnButtonMappings::from_wire(mappings.into_iter().collect())
+            .map_err(|error| error.to_string())?;
+        remove_legacy_fn_button_shortcuts()?;
+        Ok(mappings)
+    })
+}
+
 fn perform_command(command: Command) -> Result<(), String> {
     with_proxy(|proxy| match command {
-        Command::Refresh | Command::RefreshCurve => Ok(()),
+        Command::Refresh | Command::RefreshCurve | Command::RefreshConfiguration => Ok(()),
         Command::SetPowerProfile(profile) => proxy
             .call::<_, _, ()>("SetPowerProfile", &profile)
             .map_err(display_dbus_error),
@@ -2438,10 +2675,100 @@ fn perform_command(command: Command) -> Result<(), String> {
         Command::SetGpuBoost(boost) => proxy
             .call::<_, _, ()>("SetGpuBoost", &boost)
             .map_err(display_dbus_error),
+        Command::SetFnButtonMappings(mappings) => {
+            let wire: HashMap<String, String> = mappings.to_wire().into_iter().collect();
+            proxy
+                .call::<_, _, ()>("SetFnButtonMappings", &wire)
+                .map_err(display_dbus_error)
+        }
         Command::SetNativeFnKeysEnabled(enabled) => proxy
             .call::<_, _, ()>("SetNativeFnKeysEnabled", &enabled)
             .map_err(display_dbus_error),
     })
+}
+
+fn spawn_open_request_listener(ctx: Context) {
+    thread::Builder::new()
+        .name("aorus-open-requests".to_owned())
+        .spawn(move || {
+            loop {
+                let connection = match ConnectionBuilder::system()
+                    .and_then(|builder| builder.method_timeout(DBUS_METHOD_TIMEOUT).build())
+                {
+                    Ok(connection) => connection,
+                    Err(_) => {
+                        thread::sleep(Duration::from_secs(2));
+                        continue;
+                    }
+                };
+                let proxy =
+                    match zbus::blocking::Proxy::new(&connection, DESTINATION, PATH, INTERFACE) {
+                        Ok(proxy) => proxy,
+                        Err(_) => {
+                            thread::sleep(Duration::from_secs(2));
+                            continue;
+                        }
+                    };
+                let signals = match proxy.receive_signal("OpenRequested") {
+                    Ok(signals) => signals,
+                    Err(_) => {
+                        thread::sleep(Duration::from_secs(2));
+                        continue;
+                    }
+                };
+                for _ in signals {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    ctx.request_repaint();
+                }
+            }
+        })
+        .expect("failed to start Fn-key open-request listener");
+}
+
+fn spawn_profile_change_listener(ctx: Context, event_tx: Sender<WorkerEvent>) {
+    thread::Builder::new()
+        .name("aorus-profile-change-listener".to_owned())
+        .spawn(move || {
+            loop {
+                let connection = match ConnectionBuilder::system()
+                    .and_then(|builder| builder.method_timeout(DBUS_METHOD_TIMEOUT).build())
+                {
+                    Ok(connection) => connection,
+                    Err(_) => {
+                        thread::sleep(Duration::from_secs(2));
+                        continue;
+                    }
+                };
+                let proxy =
+                    match zbus::blocking::Proxy::new(&connection, DESTINATION, PATH, INTERFACE) {
+                        Ok(proxy) => proxy,
+                        Err(_) => {
+                            thread::sleep(Duration::from_secs(2));
+                            continue;
+                        }
+                    };
+                let signals = match proxy.receive_signal("ProfileChanged") {
+                    Ok(signals) => signals,
+                    Err(_) => {
+                        thread::sleep(Duration::from_secs(2));
+                        continue;
+                    }
+                };
+                for message in signals {
+                    if let Ok((power_profile, fan_profile)) =
+                        message.body().deserialize::<(String, String)>()
+                    {
+                        let _ = event_tx.send(WorkerEvent::ProfileChanged {
+                            power_profile,
+                            fan_profile,
+                        });
+                        ctx.request_repaint();
+                    }
+                }
+            }
+        })
+        .expect("failed to start profile-change listener");
 }
 
 fn status_from_wire(mut values: HashMap<String, OwnedValue>) -> Status {
@@ -2472,6 +2799,10 @@ fn status_from_wire(mut values: HashMap<String, OwnedValue>) -> Status {
         custom_curve_available: take::<bool>(&mut values, "custom_curve_available"),
         native_fn_keys_supported: take::<bool>(&mut values, "native_fn_keys_supported"),
         native_fn_keys_enabled: take::<bool>(&mut values, "native_fn_keys_enabled"),
+        native_fn_keys_attached: take::<bool>(&mut values, "native_fn_keys_attached"),
+        native_fn_keys_map_loaded: take::<bool>(&mut values, "native_fn_keys_map_loaded"),
+        native_fn_keys_map_generation: take::<u32>(&mut values, "native_fn_keys_map_generation"),
+        native_fn_keys_reader_ready: take::<bool>(&mut values, "native_fn_keys_reader_ready"),
         native_fn_keys_active: take::<bool>(&mut values, "native_fn_keys_active"),
         fan_modes: take::<Vec<u8>>(&mut values, "cap_fan_modes")
             .unwrap_or_default()
@@ -2624,7 +2955,10 @@ fn fn_action_selector(
         .selected_text(current.label())
         .width(width)
         .show_ui(ui, |ui| {
-            for action in FnAction::ALL {
+            for action in FnAction::ALL
+                .into_iter()
+                .filter(|action| action.native_hid_supported())
+            {
                 if ui
                     .add(egui::Button::selectable(current == action, action.label()))
                     .on_hover_text(action.id())
@@ -2790,6 +3124,57 @@ fn readonly_row(ui: &mut egui::Ui, label: &str, value: &str) {
 fn profile_badge(text: &str, color: Color32) -> RichText {
     RichText::new(format!("  {text}  ")).strong().color(color)
 }
+fn profile_color(profile: &str) -> Color32 {
+    match profile {
+        "performance" => RED,
+        "battery" => GREEN,
+        _ => BLUE,
+    }
+}
+fn show_profile_notification(power_profile: &str, fan_profile: &str) {
+    let Ok(connection) = ConnectionBuilder::session()
+        .and_then(|builder| builder.method_timeout(Duration::from_millis(500)).build())
+    else {
+        return;
+    };
+    let Ok(proxy) = zbus::blocking::Proxy::new(
+        &connection,
+        "org.freedesktop.Notifications",
+        "/org/freedesktop/Notifications",
+        "org.freedesktop.Notifications",
+    ) else {
+        return;
+    };
+    let summary = if power_profile.is_empty() {
+        "Fan profile changed"
+    } else {
+        "Power profile changed"
+    };
+    let body = match (power_profile.is_empty(), fan_profile.is_empty()) {
+        (false, false) => format!(
+            "{}\nFans: {}",
+            title_case(power_profile),
+            title_case(fan_profile)
+        ),
+        (false, true) => title_case(power_profile),
+        (true, false) => title_case(fan_profile),
+        (true, true) => return,
+    };
+    let hints: HashMap<String, OwnedValue> = HashMap::new();
+    let _: Result<u32, _> = proxy.call(
+        "Notify",
+        &(
+            "AORUS Control",
+            0_u32,
+            "preferences-system-power-management",
+            summary,
+            body,
+            Vec::<String>::new(),
+            hints,
+            2200_i32,
+        ),
+    );
+}
 fn title_case(text: &str) -> String {
     let mut chars = text.chars();
     chars.next().map_or_else(String::new, |first| {
@@ -2815,6 +3200,24 @@ fn compact(text: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn curve_reconnect_preserves_edits_and_updates_clean_previews() {
+        let original = default_curve();
+        let mut baseline = Some(original);
+        let mut edited = original;
+        edited[0].speed = edited[0].speed.saturating_add(1);
+        let local_edit = edited;
+        merge_curve_refresh(&mut baseline, &mut edited, original);
+        assert_eq!(edited, local_edit);
+        edited = original;
+        merge_curve_refresh(&mut baseline, &mut edited, local_edit);
+        assert_eq!(edited, local_edit);
+        assert_eq!(baseline, Some(local_edit));
+        baseline = None;
+        merge_curve_refresh(&mut baseline, &mut edited, original);
+        assert_eq!(edited, original);
+    }
+
     #[test]
     fn curve_wire_requires_fifteen_monotonic_points() {
         let valid: Vec<_> = (0..CURVE_POINTS)

@@ -26,6 +26,25 @@ there is no custom root brightness loop here. `iio-sensor-proxy` can poll the
 cached value from its normal user-space polling path and expose it to a
 desktop that supports `net.hadess.SensorProxy`.
 
+## Install
+
+From the repository root:
+
+```sh
+sudo apt-get install dkms "linux-headers-$(uname -r)"
+sudo ./tools/install-als.sh
+```
+
+The installer checks the exact laptop identity, installs the module through
+DKMS, loads it, verifies the IIO device, and enables loading at boot. It does
+not restart services or unload drivers. DKMS rebuilds the module for new
+kernels when their headers are installed. Secure Boot requires the DKMS signing
+key to be enrolled if the kernel rejects the module signature.
+
+The app discovers the sensor automatically. A valid lux reading requires a
+firmware sample; change the light reaching the sensor if it is still waiting.
+Automatic brightness remains a separate opt-in COSMIC user service.
+
 ## Build/check only
 
 Nothing in this directory installs or loads a module:
@@ -57,5 +76,5 @@ perform that operation.
   object type as well as its length and prefix. A future in-tree conversion
   should use `notify_new` only after preserving equivalent validation.
 
-The module has no installation, service, udev, or `iio-sensor-proxy` package
-changes. It is independent of fan and power-profile control.
+The sensor is independent of fan and power-profile control. The main app
+uninstaller preserves this separately installed DKMS driver.

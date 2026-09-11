@@ -12,8 +12,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use aorus_control::curve::{FAN_CURVE_POINTS, FanCurve, FanPoint};
-use aorus_control::fn_buttons::{ButtonEvidence, FnAction, FnButtonMappings, PhysicalButtonId};
-use aorus_control::hotkeys::{load_fn_button_mappings, save_fn_button_mappings};
+use aorus_control::fn_buttons::{FnAction, FnButtonMappings, PhysicalButtonId};
 use aorus_control::model::PowerProfile;
 use aorus_control::{DBUS_DESTINATION, DBUS_INTERFACE, DBUS_PATH};
 use zbus::blocking::{Connection, Proxy, connection::Builder};
@@ -123,22 +122,6 @@ fn dbus_error(operation: &str, error: impl fmt::Display) -> CliError {
         classify_dbus_error(&detail),
         format!("{operation} failed: {detail}"),
     )
-}
-
-fn fn_config_error(operation: &str, error: impl fmt::Display) -> CliError {
-    let detail = error.to_string();
-    let lower = detail.to_ascii_lowercase();
-    let code = if lower.contains("permission denied") {
-        EXIT_AUTH
-    } else if lower.contains("requires cosmic")
-        || lower.contains("unsupported desktop")
-        || lower.contains("unavailable")
-    {
-        EXIT_UNAVAILABLE
-    } else {
-        EXIT_OPERATION
-    };
-    CliError::new(code, format!("{operation} failed: {detail}"))
 }
 
 fn system_connection() -> CliResult<Connection> {
@@ -498,32 +481,43 @@ fn parse_fn_action(value: &str) -> CliResult<FnAction> {
 }
 
 fn print_fn_button(button: PhysicalButtonId, action: FnAction) {
-    let (status, evidence) = match button.evidence() {
-        ButtonEvidence::Captured(report) => ("captured native trigger", report),
-        ButtonEvidence::NotCaptured => ("not captured; translation inactive", "n/a"),
-    };
+    let source = button
+        .native_scancode()
+        .map(|scancode| format!("kernel-hid-{scancode:#x}"))
+        .unwrap_or_else(|| "firmware-native".to_owned());
     println!(
-        "{} ({})\taction={} ({})\tdefault={} ({})\ttrigger={}\tstatus={}\treport={}",
+        "{} ({})\taction={} ({})\tdefault={} ({})\tremappable={}\tsource={}\treport={}",
         button.id(),
         button.label(),
         action.id(),
         action.label(),
         button.default_action().id(),
         button.default_action().label(),
-        button.trigger(),
-        status,
-        evidence
+        button.remappable(),
+        source,
+        button.evidence()
     );
 }
 
-fn fn_mappings() -> CliResult<FnButtonMappings> {
-    load_fn_button_mappings().map_err(|error| fn_config_error("loading Fn-button mappings", error))
+fn fn_mappings(proxy: &Proxy<'_>) -> CliResult<FnButtonMappings> {
+    let values: HashMap<String, String> = proxy
+        .call("GetFnButtonMappings", &())
+        .map_err(|error| dbus_error("GetFnButtonMappings", error))?;
+    FnButtonMappings::from_wire(values.into_iter().collect())
+        .map_err(|error| CliError::new(EXIT_OPERATION, error.to_string()))
 }
 
-fn run_fn_command(arguments: &[String]) -> CliResult<()> {
+fn save_fn_mappings(proxy: &Proxy<'_>, mappings: &FnButtonMappings) -> CliResult<()> {
+    let values: HashMap<String, String> = mappings.to_wire().into_iter().collect();
+    proxy
+        .call::<_, _, ()>("SetFnButtonMappings", &values)
+        .map_err(|error| dbus_error("SetFnButtonMappings", error))
+}
+
+fn run_fn_command(proxy: &Proxy<'_>, arguments: &[String]) -> CliResult<()> {
     match arguments {
         [command, subcommand] if command == "fn" && subcommand == "list" => {
-            let mappings = fn_mappings()?;
+            let mappings = fn_mappings(proxy)?;
             for (button, action) in mappings.iter() {
                 print_fn_button(button, action);
             }
@@ -531,17 +525,16 @@ fn run_fn_command(arguments: &[String]) -> CliResult<()> {
         }
         [command, subcommand, button] if command == "fn" && subcommand == "get" => {
             let button = parse_fn_button(button)?;
-            let mappings = fn_mappings()?;
+            let mappings = fn_mappings(proxy)?;
             print_fn_button(button, mappings.get(button));
             Ok(())
         }
         [command, subcommand, button, action] if command == "fn" && subcommand == "set" => {
             let button = parse_fn_button(button)?;
             let action = parse_fn_action(action)?;
-            let mut mappings = fn_mappings()?;
+            let mut mappings = fn_mappings(proxy)?;
             mappings.set(button, action);
-            save_fn_button_mappings(&mappings)
-                .map_err(|error| fn_config_error("saving Fn-button mappings", error))?;
+            save_fn_mappings(proxy, &mappings)?;
             println!(
                 "set {} ({}) -> {} ({})",
                 button.id(),
@@ -553,17 +546,15 @@ fn run_fn_command(arguments: &[String]) -> CliResult<()> {
         }
         [command, subcommand, target] if command == "fn" && subcommand == "reset" => {
             if target == "all" {
-                let mut mappings = fn_mappings()?;
+                let mut mappings = fn_mappings(proxy)?;
                 mappings.reset_all();
-                save_fn_button_mappings(&mappings)
-                    .map_err(|error| fn_config_error("saving reset Fn-button mappings", error))?;
+                save_fn_mappings(proxy, &mappings)?;
                 println!("reset all Fn buttons to their defaults");
             } else {
                 let button = parse_fn_button(target)?;
-                let mut mappings = fn_mappings()?;
+                let mut mappings = fn_mappings(proxy)?;
                 mappings.reset(button);
-                save_fn_button_mappings(&mappings)
-                    .map_err(|error| fn_config_error("saving reset Fn-button mapping", error))?;
+                save_fn_mappings(proxy, &mappings)?;
                 println!(
                     "reset {} ({}) to its default action",
                     button.id(),
@@ -576,27 +567,47 @@ fn run_fn_command(arguments: &[String]) -> CliResult<()> {
     }
 }
 
+fn validate_fn_command(arguments: &[String]) -> CliResult<()> {
+    match arguments {
+        [command, subcommand] if command == "fn" && subcommand == "list" => Ok(()),
+        [command, subcommand, button] if command == "fn" && subcommand == "get" => {
+            parse_fn_button(button).map(|_| ())
+        }
+        [command, subcommand, button, action] if command == "fn" && subcommand == "set" => {
+            parse_fn_button(button)?;
+            parse_fn_action(action).map(|_| ())
+        }
+        [command, subcommand, target] if command == "fn" && subcommand == "reset" => {
+            if target == "all" {
+                Ok(())
+            } else {
+                parse_fn_button(target).map(|_| ())
+            }
+        }
+        _ => Err(CliError::new(EXIT_USAGE, usage())),
+    }
+}
+
 fn native_fn_keys(proxy: &Proxy<'_>, command: &str) -> CliResult<()> {
     if command == "status" {
         let status = call_status(proxy)?;
         for key in [
             "native_fn_keys_supported",
             "native_fn_keys_enabled",
+            "native_fn_keys_attached",
+            "native_fn_keys_map_loaded",
+            "native_fn_keys_reader_ready",
             "native_fn_keys_active",
         ] {
             println!("{key}={}", status_bool(&status, key).unwrap_or(false));
+        }
+        if let Some(generation) = status.get("native_fn_keys_map_generation") {
+            println!("native_fn_keys_map_generation={}", value_text(generation));
         }
         return Ok(());
     }
 
     let enabled = command == "enable";
-    if enabled {
-        // Install the user's defaults/overrides before their physical key
-        // identities become live. COSMIC dispatch then works without the UI.
-        let mappings = fn_mappings()?;
-        save_fn_button_mappings(&mappings)
-            .map_err(|error| fn_config_error("installing Fn-button mappings", error))?;
-    }
     let _: () = proxy
         .call("SetNativeFnKeysEnabled", &enabled)
         .map_err(|error| dbus_error("SetNativeFnKeysEnabled", error))?;
@@ -1100,17 +1111,16 @@ fn run(arguments: &[String]) -> CliResult<()> {
         }
     }
 
-    // These commands are deliberately handled before opening the system bus.
-    // Fn mappings are per-user configuration and radio toggles use nmcli's
-    // native NetworkManager interface; neither is an aorusd operation.
     if arguments.first().is_some_and(|command| command == "fn")
         && !matches!(
             arguments.get(1).map(String::as_str),
             Some("status" | "enable" | "disable")
         )
     {
-        return run_fn_command(arguments);
+        validate_fn_command(arguments)?;
     }
+
+    // Radio toggles use NetworkManager directly and do not require aorusd.
     if arguments
         .first()
         .is_some_and(|command| matches!(command.as_str(), "radio" | "wifi" | "airplane"))
@@ -1123,6 +1133,15 @@ fn run(arguments: &[String]) -> CliResult<()> {
         return diagnostics(&connection);
     }
     let proxy = daemon_proxy(&connection)?;
+
+    if arguments.first().is_some_and(|command| command == "fn")
+        && !matches!(
+            arguments.get(1).map(String::as_str),
+            Some("status" | "enable" | "disable")
+        )
+    {
+        return run_fn_command(&proxy, arguments);
+    }
 
     match arguments {
         [command] if command == "status" => show_status(&proxy),
