@@ -1,5 +1,9 @@
 # AERO 16 ambient-light IIO bridge
 
+This is optional hardware support for the verified AERO 16 YE5 only. Most
+users should install `aorus-control-als-dkms` from the release rather than
+build this module manually. The main application works without it.
+
 This is a deliberately narrow, out-of-tree kernel module for the tested
 machine only:
 
@@ -26,7 +30,18 @@ there is no custom root brightness loop here. `iio-sensor-proxy` can poll the
 cached value from its normal user-space polling path and expose it to a
 desktop that supports `net.hadess.SensorProxy`.
 
-## Install
+## Install the release package
+
+From the repository's tagged release:
+
+```sh
+sudo apt install ./aorus-control-als-dkms_0.1.0-1_all.deb
+```
+
+`apt` installs DKMS and its dependencies when needed. Matching headers for the
+running kernel are still required to build the module.
+
+## Install from source
 
 From the repository root:
 
@@ -44,6 +59,8 @@ key to be enrolled if the kernel rejects the module signature.
 The app discovers the sensor automatically. A valid lux reading requires a
 firmware sample; change the light reaching the sensor if it is still waiting.
 Automatic brightness remains a separate opt-in COSMIC user service.
+
+Remove the packaged module with `sudo apt remove aorus-control-als-dkms`.
 
 ## Build/check only
 

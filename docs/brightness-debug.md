@@ -1,5 +1,10 @@
 # Fn-key diagnostics
 
+Use this document only when the installed Fn path is not working or when
+collecting compatibility results. It is intentionally more technical than the
+root README and the capture commands can expose hardware identifiers; review
+their output before sharing it.
+
 The tested machine is a GIGABYTE AERO 16 YE5 (`P86VE`) with a composite
 `1044:7a3a` USB-HID keyboard. The brightness buttons originate on interface 2
 as vendor reports:

@@ -1,5 +1,8 @@
 # Local D-Bus API v1
 
+This reference is for UI, CLI, and desktop integration developers. It is not
+needed for normal installation or use; see the root [README](../README.md).
+
 This is the integration contract between `aorusd`, `aorusctl`, and the native UI.
 
 - Bus: system

@@ -1,5 +1,10 @@
 # Hardware baseline
 
+This is a dated, read-only engineering snapshot of the verified AERO 16 YE5.
+It documents how the controls were identified; it is not a list of required
+kernel versions or a guarantee that another laptop is compatible. See the
+root [README](../README.md) for supported installation targets.
+
 Collected on 2026-08-26 at 11:46 MDT with read-only commands. No `sudo`, sysfs
 write, service restart, or `/etc` modification was performed while collecting
 this record.

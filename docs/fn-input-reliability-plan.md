@@ -1,5 +1,10 @@
 # Fn-input reliability implementation record
 
+This is a historical engineering record of the native Fn-key design, not an
+installation guide. The production implementation is included in the main
+package; start with the root [README](../README.md) and use
+[Fn-key diagnostics](brightness-debug.md) only when troubleshooting.
+
 ## Goal
 
 Make every captured AERO 16 YE5 Fn button reliable across boot, logout,
