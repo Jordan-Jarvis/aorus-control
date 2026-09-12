@@ -72,6 +72,20 @@ this release. Fn mappings remain active when the UI is closed, after logout,
 and after suspend or HID reprobe. Desktop-specific actions such as opening an
 app or taking a screenshot still require an active graphical session.
 
+## Screenshots
+
+The screenshots below show the native Rust UI: live telemetry and profiles,
+the editable 15-point fan curve, system-wide Fn mappings, and power/battery
+controls.
+
+<p><img src="docs/images/dashboard-ui.png" alt="AORUS Control dashboard showing temperatures, fan RPM, and profiles" width="900"></p>
+
+<p><img src="docs/images/fans-ui.png" alt="AORUS Control fan profiles and editable fan curve" width="900"></p>
+
+<p><img src="docs/images/hotkeys-ui.png" alt="AORUS Control remappable laptop Fn buttons" width="900"></p>
+
+<p><img src="docs/images/power-ui.png" alt="AORUS Control power, ambient light, and battery controls" width="900"></p>
+
 ## Compatibility and limitations
 
 The main package is intended for Ubuntu/Pop!_OS 24.04 on `amd64`. It requires
