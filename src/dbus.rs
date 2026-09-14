@@ -14,7 +14,7 @@ use zbus::zvariant::{Array, OwnedObjectPath, OwnedValue, Value};
 
 use crate::config::Config;
 use crate::curve::{FanCurve, FanPoint};
-use crate::fn_buttons::{FnAction, FnButtonMappings};
+use crate::fn_buttons::{FnAction, FnButtonMappings, FnCommands};
 use crate::hardware::{Hardware, HardwareError};
 use crate::model::{DaemonMode, FanMode, PowerProfile, Status};
 use crate::native_keys;
@@ -40,6 +40,8 @@ struct State {
     config_path: PathBuf,
     fn_mappings: FnButtonMappings,
     fn_config_path: PathBuf,
+    fn_commands: FnCommands,
+    fn_command_path: PathBuf,
     last_error: Option<String>,
     last_profile: Option<(PowerProfile, Instant)>,
     curve_cache: Option<(FanCurve, Instant)>,
@@ -92,12 +94,34 @@ impl AorusControl {
         } else {
             (FnButtonMappings::default(), None)
         };
+        let fn_command_path = std::env::var_os("AORUS_CONTROL_FN_COMMAND")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/etc/aorus-control/fn-command.toml"));
+        let (fn_commands, fn_command_error) = if fn_command_path.exists() {
+            match crate::fn_buttons::load_command_from(&fn_command_path) {
+                Ok(command) => (command, None),
+                Err(error) if write_enabled => {
+                    return Err(format!(
+                        "refusing write-enabled startup with invalid Fn command configuration: {error}"
+                    ));
+                }
+                Err(error) => (
+                    FnCommands::default(),
+                    Some(format!("Fn command configuration: {error}")),
+                ),
+            }
+        } else {
+            (FnCommands::default(), None)
+        };
 
         let (hardware, hardware_error) = match discover_hardware() {
             Ok(hardware) => (Some(Arc::new(hardware)), None),
             Err(error) => (None, Some(format!("hardware discovery: {error}"))),
         };
-        let last_error = config_error.or(fn_config_error).or(hardware_error);
+        let last_error = config_error
+            .or(fn_config_error)
+            .or(fn_command_error)
+            .or(hardware_error);
 
         Ok(Self {
             state: Arc::new(Mutex::new(State {
@@ -111,6 +135,8 @@ impl AorusControl {
                 config_path,
                 fn_mappings,
                 fn_config_path,
+                fn_commands,
+                fn_command_path,
                 last_error,
                 last_profile: None,
                 curve_cache: None,
@@ -147,6 +173,27 @@ impl AorusControl {
             &(power_profile, fan_mode),
         ) {
             eprintln!("aorusd: could not emit profile-change notification: {error}");
+        }
+    }
+
+    fn emit_command_requested(&self) {
+        let Ok(connection) = self
+            .signal_connection
+            .lock()
+            .ok()
+            .and_then(|connection| connection.clone())
+            .ok_or(())
+        else {
+            return;
+        };
+        if let Err(error) = connection.emit_signal(
+            None::<&str>,
+            DBUS_PATH,
+            DBUS_INTERFACE,
+            "CommandRequested",
+            &(),
+        ) {
+            eprintln!("aorusd: could not emit custom-command request: {error}");
         }
     }
 
@@ -259,15 +306,67 @@ impl AorusControl {
             .clone())
     }
 
+    fn fn_commands(&self) -> Result<FnCommands, String> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| "daemon state lock poisoned".to_owned())?
+            .fn_commands
+            .clone())
+    }
+
+    fn fn_command_path(&self) -> Result<PathBuf, String> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| "daemon state lock poisoned".to_owned())?
+            .fn_command_path
+            .clone())
+    }
+
+    fn replace_fn_command(&self, value: String) -> Result<(), String> {
+        let mut next = FnCommands::default();
+        next.set(value).map_err(|error| error.to_string())?;
+        crate::fn_buttons::save_command_to(self.fn_command_path()?, &next)
+            .map_err(|error| error.to_string())?;
+        self.state
+            .lock()
+            .map_err(|_| "daemon state lock poisoned".to_owned())?
+            .fn_commands = next;
+        Ok(())
+    }
+
     fn replace_fn_button_mappings(&self, mappings: FnButtonMappings) -> Result<(), String> {
         mappings.validate().map_err(|error| error.to_string())?;
+        if mappings
+            .iter()
+            .any(|(_, action)| action.is_custom_command())
+            && self.fn_commands()?.get().trim().is_empty()
+        {
+            return Err(
+                "a custom Fn action requires a saved custom command; enter and save it first"
+                    .to_owned(),
+            );
+        }
         let previous = self.fn_button_mappings()?;
         let path = self.fn_config_path()?;
+
+        // Never report a mapping as saved while the kernel action map is
+        // absent. Startup/resume repair can race a UI edit; repair first and
+        // fail explicitly if the native input path is still unavailable.
+        let native_enabled = native_keys::is_enabled();
+        if native_enabled {
+            native_keys::repair_if_enabled()?;
+            if !native_keys::status().attached {
+                return Err(
+                    "native Fn-key translation is not attached; mapping was not saved".to_owned(),
+                );
+            }
+        }
+
         crate::fn_buttons::save_mappings_to(&path, &mappings).map_err(|error| error.to_string())?;
 
-        if native_keys::status().attached
-            && let Err(error) = native_keys::configure_mappings(&mappings)
-        {
+        if native_enabled && let Err(error) = native_keys::configure_mappings(&mappings) {
             let config_rollback = crate::fn_buttons::save_mappings_to(&path, &previous);
             let map_rollback = native_keys::configure_mappings(&previous);
             return Err(match (config_rollback, map_rollback) {
@@ -390,6 +489,13 @@ impl AorusControl {
 
     fn dispatch_fn_action(&self, action: FnAction) -> Result<(), String> {
         self.require_write_mode()?;
+        if action.is_custom_command() {
+            if self.fn_commands()?.get().trim().is_empty() {
+                return Err("no custom Fn command is configured".to_owned());
+            }
+            self.emit_command_requested();
+            return Ok(());
+        }
         let _guard = self
             .mutations
             .lock()
@@ -686,6 +792,14 @@ impl AorusControl {
             .collect())
     }
 
+    fn get_fn_command(&self) -> zbus::fdo::Result<String> {
+        Ok(self
+            .fn_commands()
+            .map_err(zbus::fdo::Error::Failed)?
+            .get()
+            .to_owned())
+    }
+
     fn get_fan_curve(&self) -> zbus::fdo::Result<Vec<(u8, u8)>> {
         let curve = if let Some(curve) = self.cached_curve() {
             curve
@@ -919,6 +1033,12 @@ impl AorusControl {
         enabled: bool,
         #[zbus(header)] header: Header<'_>,
     ) -> zbus::fdo::Result<()> {
+        if !enabled {
+            return Err(zbus::fdo::Error::Failed(
+                "native Fn-key translation is part of AORUS Control and cannot be disabled"
+                    .to_owned(),
+            ));
+        }
         self.mutate(&header, |control| {
             native_keys::set_enabled(enabled)?;
             if enabled
@@ -946,6 +1066,16 @@ impl AorusControl {
         })
     }
 
+    fn set_fn_command(
+        &self,
+        command: &str,
+        #[zbus(header)] header: Header<'_>,
+    ) -> zbus::fdo::Result<()> {
+        self.mutate(&header, |control| {
+            control.replace_fn_command(command.to_owned())
+        })
+    }
+
     #[zbus(signal)]
     async fn open_requested(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 
@@ -955,6 +1085,9 @@ impl AorusControl {
         power_profile: &str,
         fan_profile: &str,
     ) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    async fn command_requested(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 }
 
 fn status_dictionary(status: Status) -> HashMap<String, OwnedValue> {
@@ -1414,6 +1547,9 @@ fn native_keys_action_worker(control: AorusControl, connection: Connection) {
         };
 
         while native_keys::is_enabled() {
+            if !input.is_current() {
+                break;
+            }
             match input.poll_action() {
                 Ok(Some(FnAction::OpenApp)) => {
                     if let Err(error) = connection.emit_signal(

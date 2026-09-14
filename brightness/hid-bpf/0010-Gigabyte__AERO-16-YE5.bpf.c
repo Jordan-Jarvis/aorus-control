@@ -79,7 +79,7 @@ static const __u8 translated_rdesc[] = {
 	0x15, 0x00,       /* Logical Minimum (0) */
 	0x25, 0x01,       /* Logical Maximum (1) */
 
-	/* Report ID 8: ten reserved daemon-action identities, each a pulse. */
+	/* Report ID 8: eleven reserved daemon-action identities, each a pulse. */
 	0x85, 0x08,
 	0x09, 0x68,       /* F13: 04 00 00 7d, brightness down */
 	0x09, 0x69,       /* F14: 04 00 00 7e, brightness up */
@@ -91,9 +91,10 @@ static const __u8 translated_rdesc[] = {
 	0x09, 0x6f,       /* F20: daemon action */
 	0x09, 0x70,       /* F21: daemon action */
 	0x09, 0x71,       /* reserved daemon action: 04 00 00 88, AI */
-	0x75, 0x01, 0x95, 0x0a,
+	0x09, 0x72,       /* F23: shared custom-command action */
+	0x75, 0x01, 0x95, 0x0b,
 	0x81, 0x06,       /* Input (Data, Variable, Relative) */
-	0x75, 0x06, 0x95, 0x01, 0x81, 0x03,
+	0x75, 0x05, 0x95, 0x01, 0x81, 0x03,
 
 	0xc0,             /* End Collection */
 

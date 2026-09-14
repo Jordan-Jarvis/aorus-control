@@ -30,6 +30,8 @@ for file in \
   aorus-auto-brightness.service \
   auto-brightness.toml \
   aorus-brightness-hid-bpf \
+  aorus-driver-install \
+  aorus-als-install \
   70-aorus-brightness-hid-bpf.rules; do
   [[ -f $root_dir/packaging/$file ]] || die "missing packaging/$file"
 done
@@ -50,6 +52,7 @@ if [[ -z $destdir && -e /etc/aorus-control/brightness-hid-bpf.enabled ]]; then
     die 'native Fn keys are enabled but udev-hid-bpf is missing'
 fi
 install -d -m 0700 "$config_dir"
+install -D -m 0644 /dev/null "$config_dir/brightness-hid-bpf.enabled"
 if [[ -e $etc_file ]]; then
   printf '%s\n' "Preserving existing $etc_file"
 else
@@ -82,6 +85,18 @@ if [[ -f $root_dir/tools/fn-buttons-capture.sh ]]; then
 fi
 install -D -m 0755 "$root_dir/packaging/aorus-brightness-hid-bpf" \
   "$destdir$libexecdir/aorus-brightness-hid-bpf"
+install -D -m 0755 "$root_dir/packaging/aorus-driver-install" \
+  "$destdir$libexecdir/aorus-driver-install"
+install -D -m 0755 "$root_dir/packaging/aorus-als-install" \
+  "$destdir$libexecdir/aorus-als-install"
+for driver_file in Makefile aorus-laptop.c aorus-laptop.conf dkms.conf LICENSE README.md; do
+  install -D -m 0644 "$root_dir/drivers/aorus-laptop-dkms/$driver_file" \
+    "$destdir$prefix/share/aorus-control/driver/aorus-laptop-dkms/$driver_file"
+done
+for als_file in aorus-als.c Makefile dkms.conf; do
+  install -D -m 0644 "$root_dir/brightness/als/$als_file" \
+    "$destdir$prefix/share/aorus-control/driver/als/$als_file"
+done
 install -D -m 0644 "$root_dir/packaging/70-aorus-brightness-hid-bpf.rules" \
   "$destdir/usr/lib/udev/rules.d/70-aorus-brightness-hid-bpf.rules"
 if [[ -f $bpf_object ]]; then
@@ -124,11 +139,7 @@ if [[ -z $destdir ]]; then
   fi
 fi
 
-if [[ -z $destdir && -e /etc/aorus-control/brightness-hid-bpf.enabled ]]; then
-  brightness_status='Native HID Fn-key support is enabled.'
-else
-  brightness_status='Native HID Fn-key support remains disabled until enabled in the app.'
-fi
+brightness_status='Native HID Fn-key support is enabled by default.'
 printf '%s\n' \
   'Installed AORUS Control with write-enabled hardware control.' \
   'Automatic brightness is installed but remains disabled until enabled in the app.' \

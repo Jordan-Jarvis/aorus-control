@@ -9,6 +9,8 @@ General Public License. Their SPDX headers are authoritative:
 - `brightness/hid-bpf/0010-Gigabyte__AERO-16-YE5.bpf.c` — GPL-2.0-only
 - `brightness/als/aorus-als.c` — GPL-2.0-or-later
 - `brightness/aorus-hotkey-trace.c` — GPL-2.0-or-later
+- `drivers/aorus-laptop-dkms/aorus-laptop.c` — GPL-2.0-or-later (vendored from
+  `tangalbert919/gigabyte-laptop-wmi`)
 
 The GPL-2.0 text is included in [`COPYING.GPL-2.0`](COPYING.GPL-2.0).
 Components marked “or-later” may also be used under a later GPL version.

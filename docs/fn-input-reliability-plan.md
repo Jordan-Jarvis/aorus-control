@@ -62,7 +62,7 @@ translation and a versioned pinned action map.
 - Preserve the prior map if any update fails.
 - Remove `EVIOCSKEYCODE_V2`, generated hwdb files, and capability guesses from
   the production path.
-- Select the daemon reader by exact HID parent and the translated F13-F22
+- Select the daemon reader by exact HID parent and the translated F13-F23
   capability set, choosing the narrowest matching input node rather than an
   event number.
 

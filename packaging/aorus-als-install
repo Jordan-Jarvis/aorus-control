@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source_dir=${AORUS_ALS_SOURCE:-}
+for candidate in \
+  "$source_dir" \
+  /usr/share/aorus-control/driver/als \
+  /usr/local/share/aorus-control/driver/als; do
+  if [[ -n "$candidate" && -f "$candidate/dkms.conf" ]]; then
+    source_dir=$candidate
+    break
+  fi
+done
+[[ -n "$source_dir" && -f "$source_dir/dkms.conf" ]] || { echo 'Bundled ambient-light source is unavailable.' >&2; exit 1; }
+[[ $EUID == 0 ]] || { echo 'This installer must run as root.' >&2; exit 1; }
+[[ $(cat /sys/class/dmi/id/sys_vendor 2>/dev/null || true) == GIGABYTE &&
+   $(cat /sys/class/dmi/id/product_name 2>/dev/null || true) == 'AERO 16 YE5' &&
+   $(cat /sys/class/dmi/id/product_version 2>/dev/null || true) == P86VE ]] || {
+  echo 'Ambient-light support is only verified on the GIGABYTE AERO 16 YE5 (P86VE).' >&2; exit 1;
+}
+
+say() { printf '[aorus-als] %s\n' "$*"; }
+version=$(sed -n 's/^PACKAGE_VERSION="\([^"]*\)"/\1/p' "$source_dir/dkms.conf")
+[[ -n "$version" ]] || { echo 'Invalid ambient-light driver version.' >&2; exit 1; }
+for device in /sys/bus/iio/devices/iio:device*; do
+  [[ -f "$device/name" ]] || continue
+  if [[ $(cat "$device/name") == aorus-ambient-light ]]; then
+    say "Sensor already registered at $device."
+    exit 0
+  fi
+done
+export DEBIAN_FRONTEND=noninteractive
+say 'Installing DKMS and matching kernel headers.'
+apt-get update
+apt-get install -y dkms build-essential "linux-headers-$(uname -r)"
+destination=/usr/src/aorus-als-$version
+install -d -m 0755 "$destination"
+for file in aorus-als.c Makefile dkms.conf; do install -m 0644 "$source_dir/$file" "$destination/$file"; done
+if ! dkms status -m aorus-als -v "$version" -k "$(uname -r)" 2>/dev/null | grep -q installed; then
+  dkms status -m aorus-als -v "$version" 2>/dev/null | grep -q . ||
+    dkms add -m aorus-als -v "$version"
+  dkms install -m aorus-als -v "$version" -k "$(uname -r)"
+fi
+install -D -m 0644 /dev/null /etc/modules-load.d/aorus-als.conf
+printf 'aorus-als\n' > /etc/modules-load.d/aorus-als.conf
+say 'Loading ambient-light driver.'
+modprobe aorus-als
+for _ in {1..50}; do
+  for device in /sys/bus/iio/devices/iio:device*; do
+    [[ -f "$device/name" ]] || continue
+    if [[ $(cat "$device/name") == aorus-ambient-light ]]; then
+      say "Sensor registered at $device."
+      exit 0
+    fi
+  done
+  sleep 0.1
+done
+echo 'Module loaded but the ambient-light sensor did not bind.' >&2
+exit 1

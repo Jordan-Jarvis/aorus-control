@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source_dir=${AORUS_DRIVER_SOURCE:-}
+for candidate in \
+  "$source_dir" \
+  /usr/share/aorus-control/driver/aorus-laptop-dkms \
+  /usr/local/share/aorus-control/driver/aorus-laptop-dkms; do
+  if [[ -n "$candidate" && -f "$candidate/dkms.conf" ]]; then
+    source_dir=$candidate
+    break
+  fi
+done
+[[ -n "$source_dir" && -f "$source_dir/dkms.conf" ]] || { echo 'Bundled AORUS WMI driver source is unavailable.' >&2; exit 1; }
+[[ $EUID == 0 ]] || { echo 'This installer must run as root.' >&2; exit 1; }
+
+say() { printf '[aorus-driver] %s\n' "$*"; }
+version=$(sed -n 's/^PACKAGE_VERSION="\([^"]*\)"/\1/p' "$source_dir/dkms.conf")
+[[ -n "$version" ]] || { echo 'Invalid bundled driver version.' >&2; exit 1; }
+
+say 'Installing build prerequisites and matching kernel headers.'
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y dkms build-essential "linux-headers-$(uname -r)"
+
+if [[ -e /sys/devices/platform/aorus_laptop ]]; then
+  say 'AORUS WMI driver is already active.'
+  exit 0
+fi
+
+destination=/usr/src/aorus-laptop-$version
+say "Preparing DKMS source $version."
+install -d -m 0755 "$destination"
+cp -a "$source_dir"/. "$destination"/
+
+if dkms status -m aorus-laptop -v "$version" 2>/dev/null | grep -q .; then
+  say 'Refreshing the existing DKMS registration.'
+  dkms remove -m aorus-laptop -v "$version" --all || true
+fi
+
+dkms add -m aorus-laptop -v "$version"
+dkms build -m aorus-laptop -v "$version" -k "$(uname -r)"
+dkms install -m aorus-laptop -v "$version" -k "$(uname -r)"
+install -D -m 0644 "$source_dir/aorus-laptop.conf" /etc/modules-load.d/aorus-laptop.conf
+say 'Loading aorus_laptop.'
+modprobe aorus-laptop
+[[ -e /sys/devices/platform/aorus_laptop ]] || { echo 'Driver loaded but platform controls did not appear.' >&2; exit 1; }
+say 'AORUS WMI driver installed and active.'

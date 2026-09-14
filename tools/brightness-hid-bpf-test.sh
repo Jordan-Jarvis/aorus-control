@@ -125,4 +125,4 @@ printf 'Native brightness events: down=%s up=%s\n' "$down" "$up"
 ((down >= 2 && up >= 2)) || die "native brightness press/hold validation failed; event log: $log"
 
 printf 'Guarded native brightness test passed. HID-BPF will now be detached.\n'
-printf 'After installing AORUS Control, enable the production path in the app or with: aorusctl fn enable\n'
+printf 'After installing AORUS Control, the native production path is enabled automatically. Repair it with: aorusctl fn enable\n'

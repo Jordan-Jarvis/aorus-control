@@ -3,7 +3,9 @@ mod desktop_lifecycle;
 
 use std::{
     collections::HashMap,
+    io::{BufRead, BufReader},
     process::Command as ProcessCommand,
+    process::Stdio,
     sync::mpsc::{self, Receiver, Sender},
     thread,
     time::{Duration, Instant},
@@ -230,7 +232,15 @@ enum Command {
     SetChargeLimit(u8),
     SetGpuBoost(u8),
     SetFnButtonMappings(FnButtonMappings),
+    SaveButtonCommands(String),
     SetNativeFnKeysEnabled(bool),
+    InstallDriver(DriverKind),
+}
+
+#[derive(Clone, Copy, Debug)]
+enum DriverKind {
+    Wmi,
+    AmbientLight,
 }
 
 impl Command {
@@ -248,8 +258,10 @@ impl Command {
             Self::SetChargeLimit(_) => "Set charge limit",
             Self::SetGpuBoost(_) => "Set GPU boost",
             Self::SetFnButtonMappings(_) => "Save Fn-button mappings",
-            Self::SetNativeFnKeysEnabled(true) => "Enable native Fn keys",
-            Self::SetNativeFnKeysEnabled(false) => "Disable native Fn keys",
+            Self::SaveButtonCommands(_) => "Save custom Fn commands",
+            Self::SetNativeFnKeysEnabled(_) => "Repair native Fn keys",
+            Self::InstallDriver(DriverKind::Wmi) => "Install AORUS WMI driver",
+            Self::InstallDriver(DriverKind::AmbientLight) => "Install ambient-light driver",
         }
     }
 }
@@ -263,15 +275,18 @@ enum WorkerEvent {
     Curve(Result<[CurvePoint; CURVE_POINTS], String>),
     ProfileMappings(Result<HashMap<String, FanMode>, String>),
     FnButtonMappings(Result<FnButtonMappings, String>),
+    FnCommand(Result<String, String>),
     ProfileChanged {
         power_profile: String,
         fan_profile: String,
     },
+    CommandRequested,
     ActionStarted(&'static str),
     ActionFinished {
         action: &'static str,
         result: Result<(), String>,
     },
+    ActionProgress(String),
     ConnectionError(String),
 }
 
@@ -289,6 +304,7 @@ struct AorusApp {
     connection_error: Option<String>,
     action_message: Option<(bool, String)>,
     action_in_flight: Option<&'static str>,
+    action_progress: Option<String>,
     command_tx: Sender<Command>,
     event_rx: Receiver<WorkerEvent>,
     firmware_curve: Option<[CurvePoint; CURVE_POINTS]>,
@@ -312,6 +328,8 @@ struct AorusApp {
     saved_fn_button_mappings: FnButtonMappings,
     fn_button_error: Option<String>,
     fn_button_message: Option<String>,
+    fn_commands: String,
+    saved_fn_commands: String,
     auto_brightness_enabled: Option<bool>,
     auto_brightness_message: Option<String>,
     profile_osd: Option<ProfileOsd>,
@@ -365,6 +383,7 @@ impl AorusApp {
             connection_error: None,
             action_message: None,
             action_in_flight: None,
+            action_progress: None,
             command_tx,
             event_rx,
             firmware_curve: None,
@@ -388,6 +407,8 @@ impl AorusApp {
             saved_fn_button_mappings,
             fn_button_error,
             fn_button_message: None,
+            fn_commands: String::new(),
+            saved_fn_commands: String::new(),
             auto_brightness_enabled: auto_brightness_enabled(),
             auto_brightness_message: None,
             profile_osd: None,
@@ -459,6 +480,18 @@ impl AorusApp {
                             Some(format!("Fn-button mappings could not be loaded: {error}"));
                     }
                 },
+                WorkerEvent::FnCommand(result) => match result {
+                    Ok(command) => {
+                        if self.fn_commands == self.saved_fn_commands {
+                            self.fn_commands = command.clone();
+                        }
+                        self.saved_fn_commands = command;
+                    }
+                    Err(error) => {
+                        self.fn_button_error =
+                            Some(format!("Custom command could not be loaded: {error}"))
+                    }
+                },
                 WorkerEvent::ProfileChanged {
                     power_profile,
                     fan_profile,
@@ -472,12 +505,22 @@ impl AorusApp {
                         shown_at: Instant::now(),
                     });
                 }
+                WorkerEvent::CommandRequested => {
+                    if let Err(error) = run_custom_command(&self.saved_fn_commands) {
+                        self.fn_button_error = Some(error);
+                    }
+                }
                 WorkerEvent::ActionStarted(action) => {
                     self.action_in_flight = Some(action);
                     self.action_message = None;
+                    self.action_progress = None;
+                }
+                WorkerEvent::ActionProgress(progress) => {
+                    self.action_progress = Some(progress);
                 }
                 WorkerEvent::ActionFinished { action, result } => {
                     self.action_in_flight = None;
+                    self.action_progress = None;
                     if result.is_ok() {
                         if action == "Save profile mappings" {
                             self.saved_mappings = self.mappings.clone();
@@ -485,6 +528,10 @@ impl AorusApp {
                             self.fn_button_error = None;
                             self.fn_button_message =
                                 Some("Laptop Fn-button mappings saved system-wide.".to_owned());
+                        } else if action == "Save custom Fn commands" && result.is_ok() {
+                            self.saved_fn_commands = self.fn_commands.clone();
+                            self.fn_button_message =
+                                Some("Custom Fn command saved system-wide.".to_owned());
                         } else if action == "Set charge limit" {
                             self.charge_limit_dirty = false;
                         }
@@ -494,6 +541,15 @@ impl AorusApp {
                     {
                         self.fn_button_error = Some(format!("Fn mappings were not saved: {error}"));
                         self.fn_button_message = None;
+                    }
+                    if action == "Save custom Fn commands"
+                        && let Err(error) = &result
+                    {
+                        self.fn_button_error =
+                            Some(format!("Custom command was not saved: {error}"));
+                    }
+                    if result.is_ok() && action == "Install ambient-light driver" {
+                        self.auto_brightness_enabled = auto_brightness_enabled();
                     }
                     self.action_message = Some(match result {
                         Ok(()) => (
@@ -716,6 +772,9 @@ impl AorusApp {
         if let Some(action) = self.action_in_flight {
             ui.spinner();
             ui.label(RichText::new(action).color(AMBER));
+            if let Some(progress) = &self.action_progress {
+                ui.label(RichText::new(progress).small().color(MUTED));
+            }
         } else if let Some(at) = self.last_snapshot {
             ui.label(
                 RichText::new(format!("Updated {:.0}s ago", at.elapsed().as_secs_f32()))
@@ -1438,6 +1497,16 @@ impl AorusApp {
                     .small()
                     .color(MUTED),
                 );
+                if ui
+                    .add_enabled(
+                        self.action_in_flight.is_none(),
+                        egui::Button::new("Install ambient-light driver"),
+                    )
+                    .on_hover_text("Build and load the bundled ambient-light kernel driver.")
+                    .clicked()
+                {
+                    self.send(Command::InstallDriver(DriverKind::AmbientLight));
+                }
             }
             ui.horizontal_wrapped(|ui| {
                 ui.label("Automatic brightness");
@@ -1678,7 +1747,7 @@ impl AorusApp {
             } else if native_enabled {
                 ("Attached but not fully ready", AMBER)
             } else if native_supported {
-                ("Ready to enable", AMBER)
+                ("Installed; repair needed", AMBER)
             } else {
                 ("Unavailable on this hardware or installation", MUTED)
             };
@@ -1701,7 +1770,7 @@ impl AorusApp {
             ui.add(
                 egui::Label::new(
                     RichText::new(
-                        "Enabling activates the saved system-wide mappings. The daemon repairs the HID-BPF attachment and action map after resume or device reprobe.",
+                        "Native Fn handling is installed as part of AORUS Control. The daemon repairs the HID-BPF attachment and action map after boot, resume, or device reprobe.",
                     )
                     .small()
                     .color(MUTED),
@@ -1709,19 +1778,16 @@ impl AorusApp {
                 .wrap(),
             );
             ui.add_space(6.0);
-            let (label, requested) = if native_active {
-                ("Disable native Fn keys", false)
-            } else if native_enabled {
-                ("Repair native Fn keys", true)
-            } else {
-                ("Enable native Fn keys", true)
-            };
-            if ui
-                .add_enabled(can_change_native, egui::Button::new(label))
-                .on_disabled_hover_text(self.write_disabled_reason())
-                .clicked()
+            if !native_active
+                && ui
+                    .add_enabled(
+                        can_change_native,
+                        egui::Button::new("Repair native Fn keys"),
+                    )
+                    .on_disabled_hover_text(self.write_disabled_reason())
+                    .clicked()
             {
-                native_request = Some(requested);
+                native_request = Some(true);
             }
         });
         if let Some(enabled) = native_request {
@@ -1744,6 +1810,14 @@ impl AorusApp {
         }
 
         for button in PhysicalButtonId::ALL {
+            let mut command_edit = self.fn_commands.clone();
+            let custom_selected = self.fn_button_mappings.get(button).is_custom_command();
+            // Compare against the last daemon-saved value, not the draft.
+            // Comparing against command_edit made typing auto-update the
+            // draft and immediately disable Save command.
+            let command_before = self.saved_fn_commands.clone();
+            let mut save_command = false;
+            let mut test_command = false;
             card(ui, |ui| {
                 let label = ui.label(RichText::new(button.label()).strong());
                 let current = self.fn_button_mappings.get(button);
@@ -1842,6 +1916,36 @@ impl AorusApp {
                         });
                     }
                 });
+                if custom_selected {
+                    ui.separator();
+                    ui.label(RichText::new("Custom command").strong());
+                    ui.label(
+                        RichText::new(
+                            "Runs as the logged-in desktop user through the resident AORUS Control app; it requires an active graphical session and is never run as root.",
+                        )
+                        .small()
+                        .color(MUTED),
+                    );
+                    ui.add(
+                        egui::TextEdit::singleline(&mut command_edit)
+                            .hint_text("notify-send 'AORUS key'")
+                            .desired_width(ui.available_width()),
+                    );
+                    ui.horizontal_wrapped(|ui| {
+                        if ui
+                            .add_enabled(
+                                self.action_in_flight.is_none() && command_edit != command_before,
+                                egui::Button::new("Save command"),
+                            )
+                            .clicked()
+                        {
+                            save_command = true;
+                        }
+                        if ui.button("Run / test").clicked() {
+                            test_command = true;
+                        }
+                    });
+                }
                 if !remappable {
                     ui.label(
                         RichText::new(
@@ -1852,6 +1956,22 @@ impl AorusApp {
                     );
                 }
             });
+            if custom_selected && command_edit != command_before {
+                self.fn_commands = command_edit.clone();
+            }
+            if save_command {
+                self.send(Command::SaveButtonCommands(self.fn_commands.clone()));
+            }
+            if test_command {
+                self.fn_button_message = None;
+                match run_custom_command(&command_edit) {
+                    Ok(()) => {
+                        self.fn_button_message =
+                            Some("Custom command started as the desktop user.".to_owned())
+                    }
+                    Err(error) => self.fn_button_error = Some(error),
+                }
+            }
             ui.add_space(8.0);
         }
 
@@ -2120,8 +2240,10 @@ impl AorusApp {
     fn hardware(&mut self, ui: &mut egui::Ui) {
         ui.heading("Service and hardware status");
         ui.add_space(8.0);
+        let mut install_driver = false;
         card(ui, |ui| {
             let status = self.status.as_ref();
+            let driver_missing = status.and_then(|s| s.driver_available) == Some(false);
             readonly_row(ui, "D-Bus destination", DESTINATION);
             readonly_row(
                 ui,
@@ -2138,6 +2260,25 @@ impl AorusApp {
                     .map(|v| if v { "Available" } else { "Missing" })
                     .unwrap_or("Unknown"),
             );
+            if driver_missing {
+                ui.label(
+                    RichText::new(
+                        "The kernel driver is not available. Install it to enable fan, power, and hardware controls.",
+                    )
+                    .small()
+                    .color(MUTED),
+                );
+                if ui
+                    .add_enabled(
+                        self.action_in_flight.is_none(),
+                        egui::Button::new("Install AORUS WMI driver"),
+                    )
+                    .on_hover_text("Build and load the bundled AORUS/GIGABYTE WMI driver.")
+                    .clicked()
+                {
+                    install_driver = true;
+                }
+            }
             readonly_row(
                 ui,
                 "Product",
@@ -2241,6 +2382,9 @@ impl AorusApp {
                     .unwrap_or("Unavailable"),
             );
         });
+        if install_driver {
+            self.send(Command::InstallDriver(DriverKind::Wmi));
+        }
         ui.add_space(18.0);
         ui.heading("Control capabilities");
         ui.add_space(8.0);
@@ -2495,8 +2639,10 @@ fn spawn_dbus_worker(command_rx: Receiver<Command>, event_tx: Sender<WorkerEvent
             let mut next_curve_retry = Instant::now() + Duration::from_secs(10);
             refresh_profile_mappings(&event_tx);
             refresh_fn_button_mappings(&event_tx);
+            refresh_fn_command(&event_tx);
             spawn_open_request_listener(ctx.clone());
             spawn_profile_change_listener(ctx.clone(), event_tx.clone());
+            spawn_command_listener(ctx.clone(), event_tx.clone());
             ctx.request_repaint();
 
             let mut next_refresh = Instant::now() + TELEMETRY_INTERVAL;
@@ -2511,6 +2657,14 @@ fn spawn_dbus_worker(command_rx: Receiver<Command>, event_tx: Sender<WorkerEvent
                         curve_ready = refresh_curve(&event_tx);
                         refresh_profile_mappings(&event_tx);
                         refresh_fn_button_mappings(&event_tx);
+                        refresh_fn_command(&event_tx);
+                    }
+                    Ok(command @ Command::InstallDriver(kind)) => {
+                        let action = command.label();
+                        let _ = event_tx.send(WorkerEvent::ActionStarted(action));
+                        let result = run_driver_installer(kind, &event_tx);
+                        let _ = event_tx.send(WorkerEvent::ActionFinished { action, result });
+                        refresh_status(&event_tx);
                     }
                     Ok(command) => {
                         let action = command.label();
@@ -2562,6 +2716,56 @@ fn refresh_status(event_tx: &Sender<WorkerEvent>) {
     }
 }
 
+fn driver_helper(kind: DriverKind) -> &'static str {
+    match kind {
+        DriverKind::Wmi => {
+            if std::path::Path::new("/usr/libexec/aorus-driver-install").is_file() {
+                "/usr/libexec/aorus-driver-install"
+            } else {
+                "/usr/local/libexec/aorus-driver-install"
+            }
+        }
+        DriverKind::AmbientLight => {
+            if std::path::Path::new("/usr/libexec/aorus-als-install").is_file() {
+                "/usr/libexec/aorus-als-install"
+            } else {
+                "/usr/local/libexec/aorus-als-install"
+            }
+        }
+    }
+}
+
+fn run_driver_installer(kind: DriverKind, event_tx: &Sender<WorkerEvent>) -> Result<(), String> {
+    let helper = driver_helper(kind);
+    if !std::path::Path::new(helper).is_file() {
+        return Err(format!("driver installer is not packaged: {helper}"));
+    }
+    let command = format!("exec {helper} 2>&1");
+    let mut child = ProcessCommand::new("pkexec")
+        .args(["/bin/sh", "-c", command.as_str()])
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("could not start privileged installer: {error}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "privileged installer did not provide output".to_owned())?;
+    for line in BufReader::new(stdout).lines() {
+        let line = line.map_err(|error| format!("read installer progress: {error}"))?;
+        if !line.trim().is_empty() {
+            let _ = event_tx.send(WorkerEvent::ActionProgress(line));
+        }
+    }
+    let status = child
+        .wait()
+        .map_err(|error| format!("wait for privileged installer: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("privileged installer exited with {status}"))
+    }
+}
+
 fn refresh_curve(event_tx: &Sender<WorkerEvent>) -> bool {
     let result = fetch_curve();
     let ready = result.is_ok();
@@ -2575,6 +2779,10 @@ fn refresh_profile_mappings(event_tx: &Sender<WorkerEvent>) {
 
 fn refresh_fn_button_mappings(event_tx: &Sender<WorkerEvent>) {
     let _ = event_tx.send(WorkerEvent::FnButtonMappings(fetch_fn_button_mappings()));
+}
+
+fn refresh_fn_command(event_tx: &Sender<WorkerEvent>) {
+    let _ = event_tx.send(WorkerEvent::FnCommand(fetch_fn_command()));
 }
 
 fn with_proxy<T>(
@@ -2636,6 +2844,10 @@ fn fetch_fn_button_mappings() -> Result<FnButtonMappings, String> {
     })
 }
 
+fn fetch_fn_command() -> Result<String, String> {
+    with_proxy(|proxy| proxy.call("GetFnCommand", &()).map_err(display_dbus_error))
+}
+
 fn perform_command(command: Command) -> Result<(), String> {
     with_proxy(|proxy| match command {
         Command::Refresh | Command::RefreshCurve | Command::RefreshConfiguration => Ok(()),
@@ -2681,9 +2893,13 @@ fn perform_command(command: Command) -> Result<(), String> {
                 .call::<_, _, ()>("SetFnButtonMappings", &wire)
                 .map_err(display_dbus_error)
         }
+        Command::SaveButtonCommands(command) => proxy
+            .call::<_, _, ()>("SetFnCommand", &command)
+            .map_err(display_dbus_error),
         Command::SetNativeFnKeysEnabled(enabled) => proxy
             .call::<_, _, ()>("SetNativeFnKeysEnabled", &enabled)
             .map_err(display_dbus_error),
+        Command::InstallDriver(_) => Err("driver installation is handled outside D-Bus".to_owned()),
     })
 }
 
@@ -2769,6 +2985,57 @@ fn spawn_profile_change_listener(ctx: Context, event_tx: Sender<WorkerEvent>) {
             }
         })
         .expect("failed to start profile-change listener");
+}
+
+fn spawn_command_listener(ctx: Context, event_tx: Sender<WorkerEvent>) {
+    thread::Builder::new()
+        .name("aorus-command-listener".to_owned())
+        .spawn(move || {
+            loop {
+                let connection = match ConnectionBuilder::system()
+                    .and_then(|builder| builder.method_timeout(DBUS_METHOD_TIMEOUT).build())
+                {
+                    Ok(connection) => connection,
+                    Err(_) => {
+                        thread::sleep(Duration::from_secs(2));
+                        continue;
+                    }
+                };
+                let proxy =
+                    match zbus::blocking::Proxy::new(&connection, DESTINATION, PATH, INTERFACE) {
+                        Ok(proxy) => proxy,
+                        Err(_) => {
+                            thread::sleep(Duration::from_secs(2));
+                            continue;
+                        }
+                    };
+                let signals = match proxy.receive_signal("CommandRequested") {
+                    Ok(signals) => signals,
+                    Err(_) => {
+                        thread::sleep(Duration::from_secs(2));
+                        continue;
+                    }
+                };
+                for signal in signals {
+                    if signal.body().deserialize::<()>().is_ok() {
+                        let _ = event_tx.send(WorkerEvent::CommandRequested);
+                    }
+                    ctx.request_repaint();
+                }
+            }
+        })
+        .expect("failed to start custom-command listener");
+}
+
+fn run_custom_command(command: &str) -> Result<(), String> {
+    if command.trim().is_empty() {
+        return Err("No custom command is configured.".to_owned());
+    }
+    ProcessCommand::new("/bin/sh")
+        .args(["-c", command])
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("Could not run custom command as the desktop user: {error}"))
 }
 
 fn status_from_wire(mut values: HashMap<String, OwnedValue>) -> Status {
@@ -2955,16 +3222,24 @@ fn fn_action_selector(
         .selected_text(current.label())
         .width(width)
         .show_ui(ui, |ui| {
-            for action in FnAction::ALL
-                .into_iter()
-                .filter(|action| action.native_hid_supported())
-            {
+            for action in FnAction::ALL.into_iter().filter(|action| {
+                action.native_hid_supported()
+                    && (!action.is_custom_command()
+                        || Some(*action) == button.custom_command_action())
+            }) {
                 if ui
                     .add(egui::Button::selectable(current == action, action.label()))
                     .on_hover_text(action.id())
                     .clicked()
                 {
-                    mappings.set(button, action);
+                    mappings.set(
+                        button,
+                        if action.is_custom_command() {
+                            button.custom_command_action().unwrap_or(action)
+                        } else {
+                            action
+                        },
+                    );
                     changed = true;
                 }
             }

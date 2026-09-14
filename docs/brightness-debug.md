@@ -25,7 +25,7 @@ Linux and are intentionally untouched.
 The exact-model HID-BPF program fixes only interface 2's report descriptor and
 translates those captured reports before `hid-generic` maps them to Linux
 input. Standard actions become standard HID brightness, media, radio, sleep,
-or screenshot usages. AORUS power/fan actions become reserved F13–F22
+or screenshot usages. AORUS power/fan actions become reserved F13–F23
 identities consumed by the system `aorusd` daemon. The version-2 pinned action
 map is updated transactionally and supports disabled mappings without synthetic
 input.

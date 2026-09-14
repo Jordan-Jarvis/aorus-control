@@ -17,6 +17,7 @@ This is the integration contract between `aorusd`, `aorusctl`, and the native UI
 | `GetStatus` | none | `a{sv}` |
 | `GetProfileMappings` | none | `a{sy}` mapping normalized power-profile names to fan-mode values |
 | `GetFnButtonMappings` | none | `a{ss}` mapping stable physical-button IDs to action IDs |
+| `GetFnCommand` | none | `s` shared custom command used by any button mapped to `run-command` |
 | `GetFanCurve` | none | `a(yy)` containing exactly 15 `(temperature, raw_speed)` pairs when available |
 | `CaptureFanCurve` | none | captures, validates, stores, and returns the current 15 firmware points without selecting Custom or changing the active fan profile |
 | `SetPowerProfile` | `s` (`performance`, `balanced`, or `battery`) | none |
@@ -29,6 +30,7 @@ This is the integration contract between `aorusd`, `aorusctl`, and the native UI
 | `SetGpuBoost` | `y` | none |
 | `SetNativeFnKeysEnabled` | `b` | enables/disables the exact-model HID-BPF translation and its persistent udev marker |
 | `SetFnButtonMappings` | `a{ss}` | validates, stores, and immediately applies the native HID-BPF action map |
+| `SetFnCommand` | `s` | stores the shared shell command for custom Fn actions |
 
 Selecting or reapplying Custom always rewrites and verifies the stored 15-point
 curve before activating Custom. The daemon never merely selects Custom after a
@@ -36,9 +38,12 @@ firmware reset or an unverified rollback. An unverified rollback disables the
 stored Custom curve and resets Custom mappings to conservative firmware
 profiles.
 
-Physical Fn mappings are stored in `/etc/aorus-control/fn-buttons.toml`.
+Physical Fn mappings are stored in `/etc/aorus-control/fn-buttons.toml`; custom
+commands are stored in `/etc/aorus-control/fn-command.toml`. A custom command
+is emitted to the resident desktop UI and runs as that logged-in user, never as
+root, so it requires an active graphical session.
 Seven capture-proven vendor reports are translated to native HID usages and
-mapped to standard Linux input actions or reserved F13–F22 identities consumed
+mapped to standard Linux input actions or reserved F13–F23 identities consumed
 by `aorusd`. The daemon reapplies both the HID-BPF attachment and action map after
 resume, device reprobe, and watchdog-detected loss. Display and touchpad lock
 retain their firmware-native actions and reject non-default mappings.
@@ -49,6 +54,7 @@ retain their firmware-native actions and reject non-default mappings.
 | --- | --- | --- |
 | `OpenRequested` | none | an Fn button mapped to `open-app` was pressed; running desktop UI instances show and focus their window |
 | `ProfileChanged` | `(ss)` | the daemon applied a power/fan profile; the first field is the normalized power profile when available, and the second is the selected fan profile |
+| `CommandRequested` | none | a button mapped to the shared custom command was pressed; the resident UI runs that command as the desktop user |
 
 Every mutation requires polkit action
 `io.github.aoruslinux.control.modify`. The daemon is write-enabled by default;

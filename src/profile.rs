@@ -87,9 +87,15 @@ pub fn current_profile_with(connection: &Connection) -> Result<PowerProfile, Str
 /// Set the CPU/system policy through System76's native profile methods.
 pub fn set_profile(profile: PowerProfile) -> Result<(), String> {
     let connection = system_connection()?;
-    system76_proxy(&connection)?
-        .call::<_, _, ()>(system76_method(profile), &())
-        .map_err(|error| format!("System76 {} failed: {error}", system76_method(profile)))?;
+    let method = system76_method(profile);
+    if let Err(error) = system76_proxy(&connection)?.call::<_, _, ()>(method, &()) {
+        // System76 may report a stale optional-device error after changing the
+        // profile. Trust the verified profile state, not that aggregate error.
+        if current_profile_with(&connection) != Ok(profile) {
+            return Err(format!("System76 {method} failed: {error}"));
+        }
+        eprintln!("aorusd: System76 {method} reported {error}, but verified {profile}");
+    }
     let actual = current_profile_with(&connection)?;
     if actual == profile {
         Ok(())

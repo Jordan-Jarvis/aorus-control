@@ -607,6 +607,13 @@ fn native_fn_keys(proxy: &Proxy<'_>, command: &str) -> CliResult<()> {
         return Ok(());
     }
 
+    if command == "disable" {
+        return Err(CliError::new(
+            EXIT_USAGE,
+            "native Fn-key translation is part of AORUS Control and cannot be disabled",
+        ));
+    }
+
     let enabled = command == "enable";
     let _: () = proxy
         .call("SetNativeFnKeysEnabled", &enabled)
@@ -1052,10 +1059,7 @@ fn run(arguments: &[String]) -> CliResult<()> {
             true
         }
         [command, subcommand] if command == "fn" => {
-            matches!(
-                subcommand.as_str(),
-                "list" | "status" | "enable" | "disable"
-            )
+            matches!(subcommand.as_str(), "list" | "status" | "enable")
         }
         [command, subcommand, button] if command == "fn" => {
             matches!(subcommand.as_str(), "get" | "reset") && !button.is_empty()

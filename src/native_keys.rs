@@ -28,7 +28,7 @@ const ACTION_MAP_VERSION: u8 = 2;
 const ACTION_MAP_NAME: &str = "aorus_fn_act_v2";
 const ACTION_MAP_ENTRIES: usize = 8;
 const FIRST_IDENTITY_KEY: u16 = 183; // KEY_F13
-const LAST_IDENTITY_KEY: u16 = 192; // KEY_F22
+const LAST_IDENTITY_KEY: u16 = 193; // KEY_F23
 const NATIVE_BUTTONS: [PhysicalButtonId; 7] = [
     PhysicalButtonId::BrightnessDown,
     PhysicalButtonId::BrightnessUp,
@@ -60,9 +60,17 @@ struct InputEvent {
 
 pub struct ActionInput {
     file: File,
+    path: PathBuf,
 }
 
 impl ActionInput {
+    /// HID-BPF reprobes can add a better translated input node without
+    /// invalidating an existing file descriptor. Reopen when the preferred
+    /// node changes instead of silently reading the old keyboard node.
+    pub fn is_current(&self) -> bool {
+        identity_input_path().is_ok_and(|path| path == self.path)
+    }
+
     pub fn poll_action(&mut self) -> Result<Option<FnAction>, String> {
         loop {
             let mut event = InputEvent::default();
@@ -315,6 +323,7 @@ fn daemon_action_code(action: FnAction) -> Option<u32> {
         FnAction::FanCustom => 7,
         FnAction::FanReapply => 8,
         FnAction::OpenApp => 9,
+        FnAction::RunCommand => 10,
         _ => return None,
     })
 }
@@ -432,13 +441,18 @@ pub fn mappings_active(mappings: &FnButtonMappings) -> bool {
 }
 
 pub fn action_input() -> Result<ActionInput, String> {
-    let file = open_identity_input()?;
-    Ok(ActionInput { file })
+    let path = identity_input_path()?;
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(&path)
+        .map_err(|error| format!("open native Fn-key input {}: {error}", path.display()))?;
+    Ok(ActionInput { file, path })
 }
 
 fn daemon_action(keycode: u32) -> Option<FnAction> {
     match keycode.checked_sub(183) {
-        Some(code @ 0..=9) => [
+        Some(code @ 0..=10) => [
             FnAction::PowerBattery,
             FnAction::PowerBalanced,
             FnAction::PowerPerformance,
@@ -449,20 +463,12 @@ fn daemon_action(keycode: u32) -> Option<FnAction> {
             FnAction::FanCustom,
             FnAction::FanReapply,
             FnAction::OpenApp,
+            FnAction::RunCommand,
         ]
         .get(code as usize)
         .copied(),
         _ => None,
     }
-}
-
-fn open_identity_input() -> Result<File, String> {
-    let path = identity_input_path()?;
-    OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK)
-        .open(&path)
-        .map_err(|error| format!("open native Fn-key input {}: {error}", path.display()))
 }
 
 fn identity_input_path() -> Result<PathBuf, String> {
@@ -601,6 +607,7 @@ mod tests {
         );
         let mut input = ActionInput {
             file: File::from(reader),
+            path: PathBuf::new(),
         };
         for (code, value) in [(224, 1), (183, 0), (185, 2), (185, 1)] {
             let event = InputEvent {
@@ -639,6 +646,7 @@ mod tests {
             FnAction::FanCustom,
             FnAction::FanReapply,
             FnAction::OpenApp,
+            FnAction::RunCommand,
         ];
         for (code, action) in actions.into_iter().enumerate() {
             assert_eq!(daemon_action(183 + code as u32), Some(action));

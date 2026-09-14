@@ -36,11 +36,22 @@ rm -f \
   "$destdir$bindir/aorus-control" \
   "$destdir$libexecdir/aorusd" \
   "$destdir$libexecdir/aorus-auto-brightness" \
+  "$destdir$libexecdir/aorus-driver-install" \
+  "$destdir$libexecdir/aorus-als-install" \
   "$destdir$libexecdir/aorus-control-fn-buttons-capture" \
   "$destdir$libexecdir/aorus-brightness-hid-bpf" \
   "$destdir$libexecdir/aorus-udev-hid-bpf" \
   "$destdir$libdir/0010-Gigabyte__AERO-16-YE5.bpf.o" \
   "$destdir$libdir/0010-Gigabyte__AERO-16-YE5-fn-identity-prototype.bpf.o" \
+  "$destdir$prefix/share/aorus-control/driver/aorus-laptop-dkms/Makefile" \
+  "$destdir$prefix/share/aorus-control/driver/aorus-laptop-dkms/aorus-laptop.c" \
+  "$destdir$prefix/share/aorus-control/driver/aorus-laptop-dkms/aorus-laptop.conf" \
+  "$destdir$prefix/share/aorus-control/driver/aorus-laptop-dkms/dkms.conf" \
+  "$destdir$prefix/share/aorus-control/driver/aorus-laptop-dkms/LICENSE" \
+  "$destdir$prefix/share/aorus-control/driver/aorus-laptop-dkms/README.md" \
+  "$destdir$prefix/share/aorus-control/driver/als/aorus-als.c" \
+  "$destdir$prefix/share/aorus-control/driver/als/Makefile" \
+  "$destdir$prefix/share/aorus-control/driver/als/dkms.conf" \
   "$destdir/etc/aorus-control/brightness-hid-bpf.enabled" \
   "$destdir/etc/systemd/system/aorusd.service.d/mode.conf" \
   "$destdir/usr/lib/systemd/system/aorusd.service" \
@@ -53,6 +64,10 @@ rm -f \
   "$destdir/etc/xdg/autostart/io.github.aoruslinux.Control.desktop" \
   "$destdir/usr/share/icons/hicolor/scalable/apps/io.github.aoruslinux.Control.svg"
 rmdir "$destdir/etc/systemd/system/aorusd.service.d" 2>/dev/null || true
+rmdir "$destdir$prefix/share/aorus-control/driver/aorus-laptop-dkms" 2>/dev/null || true
+rmdir "$destdir$prefix/share/aorus-control/driver/als" 2>/dev/null || true
+rmdir "$destdir$prefix/share/aorus-control/driver" 2>/dev/null || true
+rmdir "$destdir$prefix/share/aorus-control" 2>/dev/null || true
 
 if [[ -z $destdir ]]; then
   systemctl daemon-reload

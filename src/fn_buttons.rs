@@ -85,6 +85,19 @@ impl PhysicalButtonId {
         self.native_scancode().is_some()
     }
 
+    pub const fn custom_command_action(self) -> Option<FnAction> {
+        Some(match self {
+            Self::BrightnessDown
+            | Self::BrightnessUp
+            | Self::Fan
+            | Self::Sleep
+            | Self::Wifi
+            | Self::SquareX
+            | Self::Ai => FnAction::RunCommand,
+            Self::Display | Self::TouchpadLock => return None,
+        })
+    }
+
     pub const fn default_action(self) -> FnAction {
         match self {
             Self::BrightnessDown => FnAction::BrightnessDown,
@@ -143,10 +156,11 @@ pub enum FnAction {
     VolumeMute,
     MediaPlayPause,
     OpenApp,
+    RunCommand,
 }
 
 impl FnAction {
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 24] = [
         Self::Disabled,
         Self::BrightnessDown,
         Self::BrightnessUp,
@@ -170,6 +184,7 @@ impl FnAction {
         Self::VolumeMute,
         Self::MediaPlayPause,
         Self::OpenApp,
+        Self::RunCommand,
     ];
 
     pub const fn id(self) -> &'static str {
@@ -197,6 +212,7 @@ impl FnAction {
             Self::VolumeMute => "volume-mute",
             Self::MediaPlayPause => "media-play-pause",
             Self::OpenApp => "open-app",
+            Self::RunCommand => "run-command",
         }
     }
 
@@ -225,6 +241,7 @@ impl FnAction {
             Self::VolumeMute => "Media: Mute volume",
             Self::MediaPlayPause => "Media: Play / pause",
             Self::OpenApp => "Application: Open AORUS Control",
+            Self::RunCommand => "Command: Run custom command",
         }
     }
 
@@ -233,6 +250,10 @@ impl FnAction {
     /// buttons also emit interface-0 chords that cannot be suppressed here.
     pub const fn native_hid_supported(self) -> bool {
         !matches!(self, Self::DisplayToggle | Self::TouchpadToggle)
+    }
+
+    pub const fn is_custom_command(self) -> bool {
+        matches!(self, Self::RunCommand)
     }
 
     pub fn from_id(id: &str) -> Option<Self> {
@@ -307,9 +328,78 @@ impl FnButtonMappings {
             if button.remappable() && !action.native_hid_supported() {
                 return Err(FnButtonError::UnsupportedAction { button, action });
             }
+            if action.is_custom_command() && button.custom_command_action() != Some(action) {
+                return Err(FnButtonError::UnsupportedAction { button, action });
+            }
         }
         Ok(())
     }
+}
+
+/// Commands used by Run custom command actions. They are deliberately stored
+/// separately from button actions so changing one does not rewrite the
+/// system-wide button mapping file.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct FnCommands {
+    command: String,
+}
+
+impl FnCommands {
+    pub fn get(&self) -> &str {
+        &self.command
+    }
+
+    pub fn set(&mut self, command: String) -> Result<(), FnButtonError> {
+        validate_command(&command)?;
+        self.command = command;
+        Ok(())
+    }
+
+    pub fn from_wire(command: String) -> Result<Self, FnButtonError> {
+        let mut commands = Self::default();
+        commands.set(command)?;
+        Ok(commands)
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StoredCommand {
+    version: u32,
+    #[serde(default)]
+    command: String,
+}
+
+pub fn load_command_from(path: impl AsRef<Path>) -> Result<FnCommands, FnButtonError> {
+    let path = path.as_ref();
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(FnCommands::default()),
+        Err(error) => return Err(FnButtonError::Io("read", path.to_owned(), error)),
+    };
+    let stored: StoredCommand =
+        toml::from_str(&text).map_err(|error| FnButtonError::CommandParse(error.to_string()))?;
+    if stored.version != CONFIG_VERSION {
+        return Err(FnButtonError::UnsupportedVersion(stored.version));
+    }
+    FnCommands::from_wire(stored.command)
+}
+
+pub fn save_command_to(path: impl AsRef<Path>, command: &FnCommands) -> Result<(), FnButtonError> {
+    validate_command(command.get())?;
+    let text = toml::to_string_pretty(&StoredCommand {
+        version: CONFIG_VERSION,
+        command: command.get().to_owned(),
+    })
+    .map_err(|error| FnButtonError::CommandParse(error.to_string()))?;
+    write_atomic(path.as_ref(), &text)
+}
+
+fn validate_command(command: &str) -> Result<(), FnButtonError> {
+    if command.len() > 4096 || command.contains('\0') {
+        return Err(FnButtonError::InvalidCommand);
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -317,6 +407,8 @@ pub enum FnButtonError {
     ConfigHome,
     Io(&'static str, PathBuf, io::Error),
     Parse(String),
+    CommandParse(String),
+    InvalidCommand,
     UnsupportedVersion(u32),
     UnknownButton(String),
     UnknownAction(String),
@@ -334,6 +426,10 @@ impl fmt::Display for FnButtonError {
             Self::ConfigHome => f.write_str("cannot locate the user configuration directory"),
             Self::Io(op, path, error) => write!(f, "{op} {}: {error}", path.display()),
             Self::Parse(error) => write!(f, "invalid Fn-button configuration: {error}"),
+            Self::CommandParse(error) => write!(f, "invalid Fn command configuration: {error}"),
+            Self::InvalidCommand => {
+                f.write_str("custom command must be at most 4096 bytes and contain no NUL bytes")
+            }
             Self::UnsupportedVersion(version) => write!(
                 f,
                 "Fn-button configuration version {version} is unsupported; no changes were made"
@@ -499,6 +595,20 @@ mod tests {
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
         );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn custom_command_round_trip_and_validation() {
+        let path = temp_file("fn-command");
+        let mut command = FnCommands::default();
+        command.set("notify-send AORUS".to_owned()).unwrap();
+        save_command_to(&path, &command).unwrap();
+        assert_eq!(load_command_from(&path).unwrap(), command);
+        assert!(matches!(
+            command.set("x".repeat(4097)),
+            Err(FnButtonError::InvalidCommand)
+        ));
         let _ = fs::remove_file(path);
     }
 

@@ -21,8 +21,9 @@ sudo apt install ./aorus-control_0.1.0-1_amd64.deb
 
 `apt` installs the package's runtime dependencies, starts the system daemon,
 and preserves an existing `/etc/aorus-control` configuration. The package is
-write-enabled by default. Native Fn translation is opt-in; enable it in
-**Hotkeys → Laptop Fn buttons** or run:
+write-enabled by default and installs the native Fn translation automatically.
+The mappings are available in **Hotkeys → Laptop Fn buttons**; to repair them
+manually, run:
 
 ```sh
 aorusctl fn enable
@@ -36,7 +37,8 @@ sudo apt install ./aorus-control-als-dkms_0.1.0-1_all.deb
 ```
 
 It needs DKMS and matching kernel headers. Ambient-light support is only
-verified on the AERO 16 YE5 and automatic brightness remains opt-in.
+verified on the AERO 16 YE5; automatic brightness is enabled from the Power &
+Battery screen.
 
 ## What is supported
 
@@ -71,6 +73,10 @@ under their existing firmware or Linux handling. They are not remappable by
 this release. Fn mappings remain active when the UI is closed, after logout,
 and after suspend or HID reprobe. Desktop-specific actions such as opening an
 app or taking a screenshot still require an active graphical session.
+The **Run custom command** action is also available for managed vendor buttons;
+enter one command in the Hotkeys screen and test it there. It runs as the
+logged-in desktop user through the resident UI, not as root, and needs an
+active graphical session.
 
 ## Screenshots
 
@@ -102,10 +108,11 @@ desktop environment. The optional COSMIC shortcut integration is desktop
 specific. The current UI does not support a pure Wayland window without
 XWayland.
 
-The package does not install or replace the external `aorus_laptop` driver.
-Kernel headers and DKMS are needed only for the optional ambient-light module.
-Secure Boot may require enrolling a DKMS signing key before that module can
-load.
+If the AORUS WMI driver is missing, open **Hardware / Diagnostics** and use
+**Install AORUS WMI driver**. The UI shows the privileged installer progress.
+The same flow is available for the ambient-light driver from **Power & Battery**.
+Kernel headers and DKMS are required for these driver installations; Secure
+Boot may require enrolling a DKMS signing key before a module can load.
 
 ## After installation
 
@@ -126,6 +133,7 @@ Configuration is stored in:
 | --- | --- |
 | `/etc/aorus-control/config.toml` | System fan/profile configuration |
 | `/etc/aorus-control/fn-buttons.toml` | System-wide Fn actions |
+| `/etc/aorus-control/fn-command.toml` | Custom commands used by mapped Fn buttons |
 | `~/.config/aorus-control/auto-brightness.toml` | Optional user brightness policy |
 
 ## Uninstall
