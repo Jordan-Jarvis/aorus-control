@@ -1,5 +1,8 @@
 # AORUS Control for Linux
 
+[![CI](https://github.com/Jordan-Jarvis/aorus-control/actions/workflows/check.yml/badge.svg)](https://github.com/Jordan-Jarvis/aorus-control/actions/workflows/check.yml)
+[![Release](https://github.com/Jordan-Jarvis/aorus-control/actions/workflows/release.yml/badge.svg)](https://github.com/Jordan-Jarvis/aorus-control/actions/workflows/release.yml)
+
 Native fan, power, temperature, battery, and laptop Fn-key controls for
 supported GIGABYTE/AORUS laptops. The privileged Rust daemon runs
 independently of the desktop; the native Rust UI is optional.
