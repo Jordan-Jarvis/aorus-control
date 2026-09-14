@@ -15,8 +15,8 @@ independently of the desktop; the native Rust UI is optional.
 For Ubuntu/Pop!_OS 24.04 on 64-bit Intel/AMD systems:
 
 ```sh
-curl -LO https://github.com/Jordan-Jarvis/aorus-control/releases/download/v0.1.0/aorus-control_0.1.0-1_amd64.deb
-sudo apt install ./aorus-control_0.1.0-1_amd64.deb
+curl -LO https://github.com/Jordan-Jarvis/aorus-control/releases/download/v0.1.1/aorus-control_0.1.1-1_amd64.deb
+sudo apt install ./aorus-control_0.1.1-1_amd64.deb
 ```
 
 `apt` installs the package's runtime dependencies, starts the system daemon,
@@ -32,8 +32,8 @@ aorusctl fn enable
 The optional ambient-light package is separate:
 
 ```sh
-curl -LO https://github.com/Jordan-Jarvis/aorus-control/releases/download/v0.1.0/aorus-control-als-dkms_0.1.0-1_all.deb
-sudo apt install ./aorus-control-als-dkms_0.1.0-1_all.deb
+curl -LO https://github.com/Jordan-Jarvis/aorus-control/releases/download/v0.1.1/aorus-control-als-dkms_0.1.1-1_all.deb
+sudo apt install ./aorus-control-als-dkms_0.1.1-1_all.deb
 ```
 
 It needs DKMS and matching kernel headers. Ambient-light support is only

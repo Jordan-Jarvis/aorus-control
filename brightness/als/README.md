@@ -35,7 +35,7 @@ desktop that supports `net.hadess.SensorProxy`.
 From the repository's tagged release:
 
 ```sh
-sudo apt install ./aorus-control-als-dkms_0.1.0-1_all.deb
+sudo apt install ./aorus-control-als-dkms_0.1.1-1_all.deb
 ```
 
 `apt` installs DKMS and its dependencies when needed. Matching headers for the

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1 — 2026-09-14
+
+First public artifact release.
+
+- Hardened native Fn-key attachment across boot, suspend, and HID reprobe.
+- Added bundled WMI and ambient-light driver installation helpers.
+- Added shared custom-command Fn actions and release-ready Debian packages.
+
 ## 0.1.0 — 2026-09-11
 
 Initial release for the tested GIGABYTE AERO 16 YE5 (`P86VE`).
