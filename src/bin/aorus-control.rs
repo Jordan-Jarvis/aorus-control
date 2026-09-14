@@ -32,6 +32,7 @@ const PATH: &str = "/io/github/aoruslinux/Control1";
 const INTERFACE: &str = "io.github.aoruslinux.Control1";
 const CURVE_POINTS: usize = 15;
 const TELEMETRY_INTERVAL: Duration = Duration::from_secs(2);
+const CONFIGURATION_RETRY_INTERVAL: Duration = Duration::from_secs(10);
 const STALE_AFTER: Duration = Duration::from_secs(8);
 const DBUS_METHOD_TIMEOUT: Duration = Duration::from_secs(5);
 const PROFILE_OSD_DURATION: Duration = Duration::from_millis(2200);
@@ -458,6 +459,16 @@ impl AorusApp {
                         }
                         self.saved_mappings = mappings;
                         self.mappings_loaded = true;
+                        if self
+                            .action_message
+                            .as_ref()
+                            .is_some_and(|(success, message)| {
+                                !success
+                                    && message.starts_with("Profile mappings could not be loaded:")
+                            })
+                        {
+                            self.action_message = None;
+                        }
                     }
                     Err(error) => {
                         self.mappings_loaded = false;
@@ -2637,7 +2648,8 @@ fn spawn_dbus_worker(command_rx: Receiver<Command>, event_tx: Sender<WorkerEvent
             refresh_status(&event_tx);
             let mut curve_ready = refresh_curve(&event_tx);
             let mut next_curve_retry = Instant::now() + Duration::from_secs(10);
-            refresh_profile_mappings(&event_tx);
+            let mut profile_mappings_ready = refresh_profile_mappings(&event_tx);
+            let mut next_profile_retry = Instant::now() + CONFIGURATION_RETRY_INTERVAL;
             refresh_fn_button_mappings(&event_tx);
             refresh_fn_command(&event_tx);
             spawn_open_request_listener(ctx.clone());
@@ -2655,7 +2667,8 @@ fn spawn_dbus_worker(command_rx: Receiver<Command>, event_tx: Sender<WorkerEvent
                     }
                     Ok(Command::RefreshConfiguration) => {
                         curve_ready = refresh_curve(&event_tx);
-                        refresh_profile_mappings(&event_tx);
+                        profile_mappings_ready = refresh_profile_mappings(&event_tx);
+                        next_profile_retry = Instant::now() + CONFIGURATION_RETRY_INTERVAL;
                         refresh_fn_button_mappings(&event_tx);
                         refresh_fn_command(&event_tx);
                     }
@@ -2682,7 +2695,8 @@ fn spawn_dbus_worker(command_rx: Receiver<Command>, event_tx: Sender<WorkerEvent
                             curve_ready = refresh_curve(&event_tx);
                         }
                         if succeeded && reload_mappings {
-                            refresh_profile_mappings(&event_tx);
+                            profile_mappings_ready = refresh_profile_mappings(&event_tx);
+                            next_profile_retry = Instant::now() + CONFIGURATION_RETRY_INTERVAL;
                         }
                         if succeeded && reload_fn_mappings {
                             refresh_fn_button_mappings(&event_tx);
@@ -2694,6 +2708,10 @@ fn spawn_dbus_worker(command_rx: Receiver<Command>, event_tx: Sender<WorkerEvent
                 if !curve_ready && Instant::now() >= next_curve_retry {
                     curve_ready = refresh_curve(&event_tx);
                     next_curve_retry = Instant::now() + Duration::from_secs(10);
+                }
+                if !profile_mappings_ready && Instant::now() >= next_profile_retry {
+                    profile_mappings_ready = refresh_profile_mappings(&event_tx);
+                    next_profile_retry = Instant::now() + CONFIGURATION_RETRY_INTERVAL;
                 }
                 next_refresh = Instant::now() + TELEMETRY_INTERVAL;
                 ctx.request_repaint();
@@ -2773,8 +2791,11 @@ fn refresh_curve(event_tx: &Sender<WorkerEvent>) -> bool {
     ready
 }
 
-fn refresh_profile_mappings(event_tx: &Sender<WorkerEvent>) {
-    let _ = event_tx.send(WorkerEvent::ProfileMappings(fetch_profile_mappings()));
+fn refresh_profile_mappings(event_tx: &Sender<WorkerEvent>) -> bool {
+    let result = fetch_profile_mappings();
+    let ready = result.is_ok();
+    let _ = event_tx.send(WorkerEvent::ProfileMappings(result));
+    ready
 }
 
 fn refresh_fn_button_mappings(event_tx: &Sender<WorkerEvent>) {

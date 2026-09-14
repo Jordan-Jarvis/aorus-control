@@ -22,15 +22,10 @@ curl -LO https://github.com/Jordan-Jarvis/aorus-control/releases/download/v0.1.1
 sudo apt install ./aorus-control_0.1.1-1_amd64.deb
 ```
 
-`apt` installs the package's runtime dependencies, starts the system daemon,
-and preserves an existing `/etc/aorus-control` configuration. The package is
-write-enabled by default and installs the native Fn translation automatically.
-The mappings are available in **Hotkeys → Laptop Fn buttons**; to repair them
-manually, run:
-
-```sh
-aorusctl fn enable
-```
+`apt` installs the package's runtime dependencies and starts the system
+daemon. The package is write-enabled by default and installs and maintains the
+native Fn translation automatically. The mappings are available in
+**Hotkeys → Laptop Fn buttons**.
 
 The optional ambient-light package is separate:
 
