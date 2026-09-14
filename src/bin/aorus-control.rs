@@ -32,7 +32,7 @@ const PATH: &str = "/io/github/aoruslinux/Control1";
 const INTERFACE: &str = "io.github.aoruslinux.Control1";
 const CURVE_POINTS: usize = 15;
 const TELEMETRY_INTERVAL: Duration = Duration::from_secs(2);
-const CONFIGURATION_RETRY_INTERVAL: Duration = Duration::from_secs(10);
+const CONFIGURATION_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 const STALE_AFTER: Duration = Duration::from_secs(8);
 const DBUS_METHOD_TIMEOUT: Duration = Duration::from_secs(5);
 const PROFILE_OSD_DURATION: Duration = Duration::from_millis(2200);
@@ -2645,11 +2645,15 @@ fn spawn_dbus_worker(command_rx: Receiver<Command>, event_tx: Sender<WorkerEvent
     thread::Builder::new()
         .name("aorus-dbus".to_owned())
         .spawn(move || {
+            // Load the cheap, configuration-only calls before the hardware
+            // reads.  Fan-curve probing can briefly occupy the daemon's
+            // hardware lock; doing it first made the mapping request hit the
+            // five-second D-Bus timeout during startup.
+            let mut profile_mappings_ready = refresh_profile_mappings(&event_tx);
+            let mut next_profile_retry = Instant::now() + CONFIGURATION_RETRY_INTERVAL;
             refresh_status(&event_tx);
             let mut curve_ready = refresh_curve(&event_tx);
             let mut next_curve_retry = Instant::now() + Duration::from_secs(10);
-            let mut profile_mappings_ready = refresh_profile_mappings(&event_tx);
-            let mut next_profile_retry = Instant::now() + CONFIGURATION_RETRY_INTERVAL;
             refresh_fn_button_mappings(&event_tx);
             refresh_fn_command(&event_tx);
             spawn_open_request_listener(ctx.clone());
@@ -2666,9 +2670,9 @@ fn spawn_dbus_worker(command_rx: Receiver<Command>, event_tx: Sender<WorkerEvent
                         curve_ready = refresh_curve(&event_tx);
                     }
                     Ok(Command::RefreshConfiguration) => {
-                        curve_ready = refresh_curve(&event_tx);
                         profile_mappings_ready = refresh_profile_mappings(&event_tx);
                         next_profile_retry = Instant::now() + CONFIGURATION_RETRY_INTERVAL;
+                        curve_ready = refresh_curve(&event_tx);
                         refresh_fn_button_mappings(&event_tx);
                         refresh_fn_command(&event_tx);
                     }
