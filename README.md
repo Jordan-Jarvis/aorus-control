@@ -57,7 +57,8 @@ write `fan_custom_speed` during normal operation.
 ### Fn buttons
 
 The verified native path can remap these seven vendor-report buttons to
-supported standard actions, AORUS fan/power actions, or **Disabled**:
+supported standard actions, AORUS fan/power actions, **Run custom command**, or
+**Disabled**:
 
 - brightness down and up;
 - fan/Gaming;
@@ -71,10 +72,9 @@ under their existing firmware or Linux handling. They are not remappable by
 this release. Fn mappings remain active when the UI is closed, after logout,
 and after suspend or HID reprobe. Desktop-specific actions such as opening an
 app or taking a screenshot still require an active graphical session.
-The **Run custom command** action is also available for managed vendor buttons;
-enter one command in the Hotkeys screen and test it there. It runs as the
-logged-in desktop user through the resident UI, not as root, and needs an
-active graphical session.
+For **Run custom command**, enter one command in the Hotkeys screen and test it
+there. It runs as the logged-in desktop user through the resident UI, not as
+root, and needs an active graphical session.
 
 ## Screenshots
 
@@ -97,7 +97,8 @@ Linux with:
 
 - systemd, D-Bus, polkit, and udev;
 - the `aorus_laptop` kernel driver from
-  [gigabyte-laptop-wmi](https://github.com/tangalbert919/gigabyte-laptop-wmi);
+  [gigabyte-laptop-wmi](https://github.com/tangalbert919/gigabyte-laptop-wmi)
+  (the main package includes the pinned DKMS source and installer);
 - X11 or XWayland with `DISPLAY` for the desktop UI; and
 - a StatusNotifierItem tray host to reopen a hidden window.
 
@@ -106,8 +107,10 @@ desktop environment. The optional COSMIC shortcut integration is desktop
 specific. The current UI does not support a pure Wayland window without
 XWayland.
 
-If the AORUS WMI driver is missing, open **Hardware / Diagnostics** and use
-**Install AORUS WMI driver**. The UI shows the privileged installer progress.
+The package does not silently compile or load a kernel module during `apt
+install`. If the AORUS WMI driver is missing, open **Hardware / Diagnostics**
+and use **Install AORUS WMI driver**. The UI shows the privileged installer
+progress and installs the bundled, pinned DKMS source for the running kernel.
 The same flow is available for the ambient-light driver from **Power & Battery**.
 Kernel headers and DKMS are required for these driver installations; Secure
 Boot may require enrolling a DKMS signing key before a module can load.
