@@ -18,7 +18,7 @@ independently of the desktop; the native Rust UI is optional.
 For Ubuntu/Pop!_OS 24.04 on 64-bit Intel/AMD systems:
 
 ```sh
-curl -LO https://github.com/Jordan-Jarvis/aorus-control/releases/download/v0.1.1/aorus-control_0.1.1-1_amd64.deb
+curl -fLO https://github.com/Jordan-Jarvis/aorus-control/releases/download/v0.1.1/aorus-control_0.1.1-1_amd64.deb
 sudo apt install ./aorus-control_0.1.1-1_amd64.deb
 ```
 
@@ -30,7 +30,7 @@ native Fn translation automatically. The mappings are available in
 The optional ambient-light package is separate:
 
 ```sh
-curl -LO https://github.com/Jordan-Jarvis/aorus-control/releases/download/v0.1.1/aorus-control-als-dkms_0.1.1-1_all.deb
+curl -fLO https://github.com/Jordan-Jarvis/aorus-control/releases/download/v0.1.1/aorus-control-als-dkms_0.1.1-1_all.deb
 sudo apt install ./aorus-control-als-dkms_0.1.1-1_all.deb
 ```
 
