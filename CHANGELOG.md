@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.2 — 2026-09-17
+
+- Install the bundled `aorus_laptop` DKMS driver as part of the main Debian
+  package installation.
+- Declare DKMS, build tools, and generic kernel headers as package
+  dependencies so the post-install driver setup does not invoke `apt` inside
+  an active package transaction.
+
 ## 0.1.1 — 2026-09-14
 
 First public artifact release.

@@ -46,7 +46,7 @@ Section: utils
 Priority: optional
 Architecture: $arch
 Maintainer: AORUS Control contributors
-Depends: libc6, libgcc-s1, libcap2, libelf1, libudev1, libzstd1, zlib1g, libgl1, libegl1, libx11-6, libxkbcommon0, libwayland-client0, systemd, udev, dbus, policykit-1
+Depends: libc6, libgcc-s1, libcap2, libelf1, libudev1, libzstd1, zlib1g, libgl1, libegl1, libx11-6, libxkbcommon0, libwayland-client0, systemd, udev, dbus, policykit-1, dkms, build-essential, linux-headers-generic
 Description: Native Linux controls for supported GIGABYTE AERO/AORUS laptops
  $description
 CONTROL
@@ -56,6 +56,13 @@ CONTROL
 set -e
 if command -v udevadm >/dev/null 2>&1; then
     udevadm control --reload-rules >/dev/null 2>&1 || true
+fi
+if [ -x /usr/libexec/aorus-driver-install ]; then
+    if ! /usr/libexec/aorus-driver-install --package-install; then
+        echo 'Warning: the AORUS WMI driver could not be installed automatically; use Hardware / Diagnostics in AORUS Control.' >&2
+    fi
+else
+    echo 'Warning: the bundled AORUS WMI driver installer is unavailable.' >&2
 fi
 if command -v busctl >/dev/null 2>&1 && [ -S /run/dbus/system_bus_socket ]; then
     busctl call --system org.freedesktop.DBus /org/freedesktop/DBus \
@@ -94,6 +101,15 @@ if [ "$1" = remove ] && [ -x /usr/local/libexec/aorus-brightness-hid-bpf ]; then
         /usr/local/libexec/aorus-brightness-hid-bpf remove "$device" >/dev/null 2>&1 || true
     done
 fi
+if [ "$1" = remove ] && [ -e /var/lib/aorus-control/driver-managed ] && command -v dkms >/dev/null 2>&1; then
+    version=$(sed -n 's/^PACKAGE_VERSION="\([^"]*\)"/\1/p' /usr/share/aorus-control/driver/aorus-laptop-dkms/dkms.conf)
+    modprobe -r aorus_laptop >/dev/null 2>&1 || true
+    if [ -n "$version" ]; then
+        dkms remove -m aorus-laptop -v "$version" --all >/dev/null 2>&1 || true
+    fi
+    rm -f /etc/modules-load.d/aorus-laptop.conf /var/lib/aorus-control/driver-managed
+    depmod -a >/dev/null 2>&1 || true
+fi
 exit 0
 PRERM
   sed -i 's#/usr/local/libexec#/usr/libexec#g' "$pkg/DEBIAN/prerm"
@@ -103,6 +119,7 @@ PRERM
 set -e
 if [ "$1" = purge ]; then
     deb-systemd-helper purge aorusd.service >/dev/null 2>&1 || true
+    rm -f /var/lib/aorus-control/driver-managed
 fi
 if [ -d /run/systemd/system ]; then
     systemctl daemon-reload >/dev/null 2>&1 || true

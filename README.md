@@ -18,11 +18,12 @@ independently of the desktop; the native Rust UI is optional.
 For Ubuntu/Pop!_OS 24.04 on 64-bit Intel/AMD systems:
 
 ```sh
-curl -fLO https://github.com/Jordan-Jarvis/aorus-control/releases/download/v0.1.1/aorus-control_0.1.1-1_amd64.deb
-sudo apt install ./aorus-control_0.1.1-1_amd64.deb
+curl -fLO https://github.com/Jordan-Jarvis/aorus-control/releases/download/v0.1.2/aorus-control_0.1.2-1_amd64.deb
+sudo apt install ./aorus-control_0.1.2-1_amd64.deb
 ```
 
-`apt` installs the package's runtime dependencies and starts the system
+`apt` installs the package's runtime dependencies, builds and loads the bundled
+`aorus_laptop` DKMS driver for the running kernel, and starts the system
 daemon. The package is write-enabled by default and installs and maintains the
 native Fn translation automatically. The mappings are available in
 **Hotkeys → Laptop Fn buttons**.
@@ -30,8 +31,8 @@ native Fn translation automatically. The mappings are available in
 The optional ambient-light package is separate:
 
 ```sh
-curl -fLO https://github.com/Jordan-Jarvis/aorus-control/releases/download/v0.1.1/aorus-control-als-dkms_0.1.1-1_all.deb
-sudo apt install ./aorus-control-als-dkms_0.1.1-1_all.deb
+curl -fLO https://github.com/Jordan-Jarvis/aorus-control/releases/download/v0.1.2/aorus-control-als-dkms_0.1.2-1_all.deb
+sudo apt install ./aorus-control-als-dkms_0.1.2-1_all.deb
 ```
 
 It needs DKMS and matching kernel headers. Ambient-light support is only
@@ -107,10 +108,10 @@ desktop environment. The optional COSMIC shortcut integration is desktop
 specific. The current UI does not support a pure Wayland window without
 XWayland.
 
-The package does not silently compile or load a kernel module during `apt
-install`. If the AORUS WMI driver is missing, open **Hardware / Diagnostics**
-and use **Install AORUS WMI driver**. The UI shows the privileged installer
-progress and installs the bundled, pinned DKMS source for the running kernel.
+The package installs the bundled, pinned WMI driver during `apt install`. If
+automatic installation cannot complete—for example, matching headers are
+unavailable—open **Hardware / Diagnostics** and use **Install AORUS WMI
+driver**. The UI shows the privileged installer progress.
 The same flow is available for the ambient-light driver from **Power & Battery**.
 Kernel headers and DKMS are required for these driver installations; Secure
 Boot may require enrolling a DKMS signing key before a module can load.
@@ -145,9 +146,9 @@ For the Debian package:
 sudo apt remove aorus-control
 ```
 
-This stops the daemon and removes integration files while preserving the
-configuration directory. Remove the optional ALS package separately if it was
-installed:
+This stops the daemon, removes integration files, and removes the bundled WMI
+DKMS driver when AORUS Control installed it. Configuration is preserved on a
+normal remove. Remove the optional ALS package separately if it was installed:
 
 ```sh
 sudo apt remove aorus-control-als-dkms

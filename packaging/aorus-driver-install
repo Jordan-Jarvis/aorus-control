@@ -14,14 +14,31 @@ done
 [[ -n "$source_dir" && -f "$source_dir/dkms.conf" ]] || { echo 'Bundled AORUS WMI driver source is unavailable.' >&2; exit 1; }
 [[ $EUID == 0 ]] || { echo 'This installer must run as root.' >&2; exit 1; }
 
+package_install=false
+if [[ ${1:-} == --package-install ]]; then
+  package_install=true
+elif [[ -n ${1:-} ]]; then
+  echo "Unknown option: $1" >&2
+  exit 2
+fi
+
 say() { printf '[aorus-driver] %s\n' "$*"; }
 version=$(sed -n 's/^PACKAGE_VERSION="\([^"]*\)"/\1/p' "$source_dir/dkms.conf")
 [[ -n "$version" ]] || { echo 'Invalid bundled driver version.' >&2; exit 1; }
 
-say 'Installing build prerequisites and matching kernel headers.'
-export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install -y dkms build-essential "linux-headers-$(uname -r)"
+if $package_install; then
+  say 'Using the DKMS and kernel-header dependencies installed by apt.'
+  command -v dkms >/dev/null || { echo 'dkms is unavailable.' >&2; exit 1; }
+  [[ -d /lib/modules/$(uname -r)/build ]] || {
+    echo "Matching kernel headers are unavailable for $(uname -r)." >&2
+    exit 1
+  }
+else
+  say 'Installing build prerequisites and matching kernel headers.'
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update
+  apt-get install -y dkms build-essential "linux-headers-$(uname -r)"
+fi
 
 if [[ -e /sys/devices/platform/aorus_laptop ]]; then
   say 'AORUS WMI driver is already active.'
@@ -45,4 +62,5 @@ install -D -m 0644 "$source_dir/aorus-laptop.conf" /etc/modules-load.d/aorus-lap
 say 'Loading aorus_laptop.'
 modprobe aorus-laptop
 [[ -e /sys/devices/platform/aorus_laptop ]] || { echo 'Driver loaded but platform controls did not appear.' >&2; exit 1; }
+install -D -m 0644 /dev/null /var/lib/aorus-control/driver-managed
 say 'AORUS WMI driver installed and active.'

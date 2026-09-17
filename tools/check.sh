@@ -17,6 +17,8 @@ target/release/aorusd --help | grep -Fqx \
 while IFS= read -r script; do
   bash -n "$script"
 done < <(find . -path ./target -prune -o -type f -name '*.sh' -print)
+bash -n packaging/aorus-driver-install
+grep -Fqx 'if [ -x /usr/libexec/aorus-driver-install ]; then' <(sed -n '/cat >"$pkg\/DEBIAN\/postinst"/,/^POSTINST/p' tools/build-deb.sh)
 
 python3 - <<'PY'
 import xml.etree.ElementTree as ET
