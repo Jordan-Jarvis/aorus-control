@@ -1,4 +1,8 @@
 //! Fan-curve validation and wire encoding.
+//!
+//! Firmware fan levels are not required to be monotonic. Some supported
+//! laptops expose an OEM curve with a fan-level dip, so validation constrains
+//! the temperature axis and raw value range without rewriting the curve.
 
 use serde::{Deserialize, Serialize};
 use std::{fmt, ops::Index};
@@ -99,9 +103,6 @@ impl FanCurve {
                 if point.temperature < previous.temperature {
                     return Err(CurveError::TemperatureOrder { index });
                 }
-                if point.raw_speed < previous.raw_speed {
-                    return Err(CurveError::SpeedOrder { index });
-                }
             }
         }
         Ok(())
@@ -135,11 +136,9 @@ impl FanCurve {
         let next = self.points.get(index + 1);
         let min_temperature = previous.map_or(0, |point| point.temperature);
         let max_temperature = next.map_or(100, |point| point.temperature);
-        let min_speed = previous.map_or(0, |point| point.raw_speed);
-        let max_speed = next.map_or(u8::MAX, |point| point.raw_speed);
         Ok(FanPoint::new(
             temperature.clamp(min_temperature, max_temperature),
-            raw_speed.clamp(min_speed, max_speed),
+            raw_speed,
         ))
     }
 
@@ -170,7 +169,6 @@ pub enum CurveError {
     Index(usize),
     Temperature { index: usize, value: u8 },
     TemperatureOrder { index: usize },
-    SpeedOrder { index: usize },
 }
 
 impl fmt::Display for CurveError {
@@ -185,7 +183,6 @@ impl fmt::Display for CurveError {
                 write!(f, "point {index} temperature {value} is above 100°C")
             }
             Self::TemperatureOrder { index } => write!(f, "point {index} temperature decreases"),
-            Self::SpeedOrder { index } => write!(f, "point {index} fan level decreases"),
         }
     }
 }
@@ -210,7 +207,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_rejects_count_range_and_order() {
+    fn validation_rejects_count_range_and_temperature_order() {
         assert!(matches!(
             FanCurve::new(vec![]),
             Err(CurveError::PointCount(0))
@@ -229,17 +226,14 @@ mod tests {
         ));
         let mut points = curve().into_points();
         points[4].raw_speed = points[3].raw_speed - 1;
-        assert!(matches!(
-            FanCurve::from_array(points),
-            Err(CurveError::SpeedOrder { index: 4 })
-        ));
+        assert!(FanCurve::from_array(points).is_ok());
     }
 
     #[test]
-    fn clamping_keeps_a_curve_monotonic() {
+    fn clamping_keeps_temperature_points_ordered() {
         let curve = curve();
         let changed = curve.with_clamped_point(5, 0, 0).unwrap();
-        assert_eq!(changed[5], FanPoint::new(20, 40));
+        assert_eq!(changed[5], FanPoint::new(20, 0));
         let changed = curve.with_clamped_point(14, 100, 255).unwrap();
         assert_eq!(changed[14], FanPoint::new(100, 255));
         assert!(changed.validate().is_ok());

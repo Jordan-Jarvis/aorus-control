@@ -363,9 +363,7 @@ fn parse_curve(point_arguments: &[String]) -> CliResult<FanCurve> {
     FanCurve::new(points).map_err(|error| {
         CliError::new(
             EXIT_USAGE,
-            format!(
-                "invalid fan curve: {error}; temperatures and raw fan levels must not decrease"
-            ),
+            format!("invalid fan curve: {error}; temperatures must not decrease"),
         )
     })
 }
@@ -1220,7 +1218,7 @@ mod tests {
     }
 
     #[test]
-    fn curve_parser_requires_exactly_fifteen_monotonic_points() {
+    fn curve_parser_requires_exactly_fifteen_ordered_temperatures() {
         let arguments = valid_curve_arguments();
         assert!(parse_curve(&arguments).is_ok());
 
@@ -1235,6 +1233,10 @@ mod tests {
         let mut descending = arguments;
         descending[4] = "10:40".to_owned();
         assert!(parse_curve(&descending).is_err());
+
+        let mut firmware_dip = valid_curve_arguments();
+        firmware_dip[4] = "20:1".to_owned();
+        assert!(parse_curve(&firmware_dip).is_ok());
     }
 
     #[test]

@@ -1222,7 +1222,7 @@ impl AorusApp {
                         self.selected_point = index;
                     }
                 });
-            response.response.on_hover_text("Drag a point to edit. The point is clamped between its neighbours so the curve remains monotonic.");
+            response.response.on_hover_text("Drag a point to edit. Temperatures stay ordered; firmware fan levels may include plateaus or dips.");
             if curve_editable {
                 self.curve_keyboard(ui);
             }
@@ -3160,9 +3160,9 @@ fn curve_from_wire(points: Vec<(u8, u8)>) -> Result<[CurvePoint; CURVE_POINTS], 
         })?;
     if points
         .windows(2)
-        .any(|pair| pair[0].temperature > pair[1].temperature || pair[0].speed > pair[1].speed)
+        .any(|pair| pair[0].temperature > pair[1].temperature)
     {
-        return Err("daemon returned a non-monotonic fan curve".to_owned());
+        return Err("daemon returned a non-monotonic temperature curve".to_owned());
     }
     Ok(points)
 }
@@ -3519,7 +3519,7 @@ mod tests {
     }
 
     #[test]
-    fn curve_wire_requires_fifteen_monotonic_points() {
+    fn curve_wire_requires_fifteen_ordered_temperatures() {
         let valid: Vec<_> = (0..CURVE_POINTS)
             .map(|i| ((i * 5) as u8, (i * 10) as u8))
             .collect();
@@ -3527,7 +3527,11 @@ mod tests {
         assert!(curve_from_wire(valid[..14].to_vec()).is_err());
         let mut invalid = valid;
         invalid[8].1 = 1;
-        assert!(curve_from_wire(invalid).is_err());
+        assert!(curve_from_wire(invalid.clone()).is_ok());
+
+        let mut invalid_temperature = invalid;
+        invalid_temperature[8].0 = 1;
+        assert!(curve_from_wire(invalid_temperature).is_err());
     }
     #[test]
     fn navigation_moves_to_top_before_sidebar_crowds_content() {

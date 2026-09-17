@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.3 — 2026-09-17
+
+- Accept firmware fan curves whose raw fan level briefly dips, as exposed by
+  the verified AERO 16 YE5 at point 13.
+- Keep temperature points ordered while preserving the firmware's actual fan
+  levels in the UI and curve editor.
+
 ## 0.1.2 — 2026-09-17
 
 - Install the bundled `aorus_laptop` DKMS driver as part of the main Debian
