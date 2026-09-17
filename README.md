@@ -154,6 +154,13 @@ normal remove. Remove the optional ALS package separately if it was installed:
 sudo apt remove aorus-control-als-dkms
 ```
 
+For a complete cleanup from a source checkout—including configurations,
+custom DKMS modules, and older AORUS Control service files—run:
+
+```sh
+sudo ./uninstall.sh
+```
+
 ## Build from source
 
 Source builds are for developers or distributions without a matching package.
