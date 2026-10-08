@@ -540,6 +540,7 @@ impl AorusApp {
                             self.fn_button_message =
                                 Some("Laptop Fn-button mappings saved system-wide.".to_owned());
                         } else if action == "Save custom Fn commands" && result.is_ok() {
+                            self.fn_button_error = None;
                             self.saved_fn_commands = self.fn_commands.clone();
                             self.fn_button_message =
                                 Some("Custom Fn command saved system-wide.".to_owned());
@@ -723,7 +724,7 @@ impl AorusApp {
             (
                 GREEN,
                 "Write enabled",
-                "Hardware changes require polkit approval".to_owned(),
+                "Hardware changes are enabled for the active desktop session".to_owned(),
             )
         } else {
             (

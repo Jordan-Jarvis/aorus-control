@@ -4,11 +4,19 @@
 <policyconfig>
   <action id="io.github.aoruslinux.control.modify">
     <description>Modify AORUS laptop controls</description>
-    <message>Authentication is required to change AORUS fan, power, charging, GPU, or native Fn-key settings.</message>
+    <message>Permission is required to change AORUS fan, power, charging, GPU, or native Fn-key settings.</message>
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>no</allow_inactive>
-      <allow_active>auth_self_keep</allow_active>
+      <!--
+        AORUS Control is a per-machine desktop control daemon.  The UI and
+        CLI already connect through the authenticated system bus, and the
+        daemon rejects every mutation while shadow mode is active.  Allowing
+        the active local session avoids requiring a separate polkit agent on
+        desktops such as COSMIC, where CheckAuthorization can otherwise
+        return a challenge that the headless daemon cannot present.
+      -->
+      <allow_active>yes</allow_active>
     </defaults>
   </action>
 </policyconfig>
