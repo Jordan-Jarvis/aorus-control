@@ -30,6 +30,10 @@ NoNewPrivileges=true
 # the exact-model HID program and its action map.
 CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_SYS_ADMIN
 AmbientCapabilities=CAP_BPF CAP_PERFMON CAP_SYS_ADMIN
+# libbpf must lock the BPF object and map while installing the HID-BPF links.
+# The default 8 MiB limit makes the loader fail after a reboot even though
+# the daemon has the required BPF capabilities.
+LimitMEMLOCK=infinity
 LockPersonality=true
 RestrictRealtime=true
 SystemCallArchitectures=native
