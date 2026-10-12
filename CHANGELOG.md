@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.4 — 2026-10-12
+
+- Preserve the daemon's locked-memory limit needed to attach the native HID-BPF
+  Fn-key path after reboot.
+
 ## 0.1.3 — 2026-09-17
 
 - Accept firmware fan curves whose raw fan level briefly dips, as exposed by
